@@ -268,10 +268,11 @@ const ratingInfo = { new15: 0, old35: 0, total: 0 };
 const sum = (arr, k) => arr.reduce((a, s) => a + s[k], 0);
 const avg = (arr, k) => (arr.length ? sum(arr, k) / arr.length : 0);
 if (new15.length + old35.length) {
-log(`✓ 新曲枠 ${new15.length} 首 · 旧曲枠 ${old35.length} 首${target.guessed ? "（没认出页面上的标题，按顺序划分）" : ""}`);
+log(`✓ BEST35 ${old35.length} 首 · NEW15 ${new15.length} 首${target.guessed ? "（没认出页面上的标题，按顺序划分）" : ""}`);
 }
 let charts = null;
 let latestVersion = Math.max(versionNames.length - 1, ...constData.map((m) => versionIndexOf(m.version)));
+const newVersions = () => (latestVersion >= 25 ? [latestVersion, latestVersion - 1] : [latestVersion]);
 const membership = new Map(); // 版本序号 → Set(曲名|STD/DX)
 async function loadVersion(v) {
 if (membership.has(v)) return membership.get(v);
@@ -354,21 +355,31 @@ close.onclick = () => panel.remove();
 panel.appendChild(close);
 return;
 }
-log(`正在读取当前版本（${versionName(latestVersion)}）的曲目 ...`);
-const latestSet = await loadVersion(latestVersion);
-const isNew = (s) => (latestSet.size ? latestSet.has(keyOf(s)) : s.otoge_version === latestVersion);
+const vs = newVersions();
+log(`正在读取新曲范围（${vs.map(versionName).join(" / ")}）的曲目 ...`);
+const sets = [];
+for (const v of vs) {
+sets.push(await loadVersion(v));
+await sleep(1000);
+}
+const official = sets.some((set) => set.size);
+const isNew = (s) => (official ? sets.some((set) => set.has(keyOf(s))) : vs.includes(s.otoge_version));
 const byRating = (a, b) => b.rating - a.rating || b.achievement - a.achievement;
 const rated = charts.filter((s) => s.rating > 0);
 new15 = rated.filter(isNew).sort(byRating).slice(0, 15);
 old35 = rated.filter((s) => !isNew(s)).sort(byRating).slice(0, 35);
 b50Source = "全曲成绩计算（EXPERT 以上）";
 }
-new15.forEach((s, i) => (s.frame = `新${i + 1}`));
-old35.forEach((s, i) => (s.frame = `旧${i + 1}`));
+new15.forEach((s, i) => (s.frame = `N${i + 1}`));
+old35.forEach((s, i) => (s.frame = `B${i + 1}`));
 b50 = new15.concat(old35);
 ratingInfo.new15 = sum(new15, "rating");
 ratingInfo.old35 = sum(old35, "rating");
 ratingInfo.total = ratingInfo.new15 + ratingInfo.old35;
+if (b50Source === "rating 对象曲页面" && b50.length && b50.every((s) => !s.dx_max && !s.fc)) {
+log("对象曲页面上没有 FC/AP、DX 分，读取成绩列表补上 ...");
+if (!(await loadAllCharts())) log("× 没有读到成绩列表，B50 图不显示 FC/AP、DX 分");
+}
 const IMG = { W: 1800, PAD: 28, COLS: 5, GAP: 10, CH: 124, HEAD: 168, SEC: 44, FOOT: 40, PER_IMAGE: 150 };
 IMG.CW = Math.floor((IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS);
 const FONT = `"Hiragino Sans","Hiragino Kaku Gothic ProN","PingFang SC","Noto Sans CJK JP","Microsoft YaHei",sans-serif`;
@@ -625,15 +636,15 @@ return drawImage(
 `DX Rating ${player.rating || calc}`,
 player.rating
 ? `游戏内 Rating（maimai DX NET）· 按定数计算 ${calc}${diff === 0 ? "（一致）" : `（差 ${diff > 0 ? "+" : ""}${diff}）`}`
-: `新曲枠 ${ratingInfo.new15} + 旧曲枠 ${ratingInfo.old35}（按定数计算）`,
+: `BEST35 ${ratingInfo.old35} + NEW15 ${ratingInfo.new15}（按定数计算）`,
 [
-["新曲枠", `${ratingInfo.new15}`, `${new15.length}曲 · 平均 ${avg(new15, "rating").toFixed(1)} · 最低 ${new15.length ? new15[new15.length - 1].rating : "—"}`],
-["旧曲枠", `${ratingInfo.old35}`, `${old35.length}曲 · 平均 ${avg(old35, "rating").toFixed(1)} · 最低 ${old35.length ? old35[old35.length - 1].rating : "—"}`],
+["BEST35", `${ratingInfo.old35}`, `${old35.length}曲 · 平均 ${avg(old35, "rating").toFixed(1)} · 最低 ${old35.length ? old35[old35.length - 1].rating : "—"}`],
+["NEW15", `${ratingInfo.new15}`, `${new15.length}曲 · 平均 ${avg(new15, "rating").toFixed(1)} · 最低 ${new15.length ? new15[new15.length - 1].rating : "—"}`],
 ["平均达成率", `${avg(b50, "achievement").toFixed(4)}%`, `SSS+ ${countBy(b50, "rank", "SSS+")} · SSS ${countBy(b50, "rank", "SSS")} · SS+ ${countBy(b50, "rank", "SS+")}`],
 ],
 [
-{ name: "新曲枠", note: `${versionName(latestVersion)} · 合计 ${ratingInfo.new15}`, rows: new15, label: (s, i) => `#${i + 1}` },
-{ name: "旧曲枠", note: `合计 ${ratingInfo.old35}`, rows: old35, label: (s, i) => `#${i + 1}` },
+{ name: "BEST35", note: `合计 ${ratingInfo.old35}`, rows: old35, label: (s) => s.frame },
+{ name: "NEW15", note: `${newVersions().map(versionName).join(" / ")} · 合计 ${ratingInfo.new15}`, rows: new15, label: (s) => s.frame },
 ]
 );
 };
