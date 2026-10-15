@@ -83,21 +83,30 @@ const constText = (s) => {
 const p = constParts(s);
 return p ? p.int + (p.plus ? "+" : "") + p.dec : "";
 };
+function rowScope(el) {
+const parent = el.parentElement;
+if (parent && parent.querySelectorAll("[class*=_score_back]").length === 1) return { id: parent.id || el.id, nodes: [parent] };
+const nodes = [el];
+for (let n = el.nextElementSibling; n && !/_score_back/.test(String(n.className)) && !n.querySelector("[class*=_score_back]"); n = n.nextElementSibling) nodes.push(n);
+return { id: el.id, nodes };
+}
+const within = (nodes, sel) => nodes.flatMap((n) => (n.matches(sel) ? [n] : []).concat([...n.querySelectorAll(sel)]));
 function parseRow(el, genre) {
 const cls = (String(el.className).match(/music_([a-z]+)_score_back/) || [])[1];
 const diff = ALL_DIFFS.find((d) => d.cls === cls);
 if (!diff) return null; // 宴谱面等
 const title = norm(el.querySelector(".music_name_block")?.textContent);
 if (!title) return null;
-const row = el.parentElement || el;
-const id = row.id || el.id || "";
-let kind;
-if (id) kind = /sta/i.test(id) ? "STD" : "DX";
+const { id = "", nodes } = rowScope(el);
+const idx = within(nodes, "input[name=idx]")[0]?.value || "";
+const imgs = within(nodes, "img").map((i) => i.getAttribute("src") || "");
+let kind = "";
+if (/^(sta|dx)_/i.test(id)) kind = /^sta/i.test(id) ? "STD" : "DX";
 else {
-const icon = row.querySelector("img.music_kind_icon") ||
-[...row.querySelectorAll("img")].find((i) => /music_(standard|dx)\./.test(i.src));
-kind = icon && /standard/.test(icon.src) ? "STD" : "DX";
+const icon = imgs.find((src) => /music_(standard|dx)\.png/.test(src));
+if (icon) kind = /standard/.test(icon) ? "STD" : "DX";
 }
+const jacket = (imgs.join(" ").match(/img\/Music\/([0-9a-z]+\.png)/i) || [])[1] || "";
 const blocks = el.querySelectorAll(".music_score_block");
 const achText = blocks[0]?.textContent || "";
 const played = /\d/.test(achText);
@@ -110,14 +119,16 @@ if (FC_NAMES[m[1]]) fc = FC_NAMES[m[1]];
 if (SYNC_NAMES[m[1]]) sync = SYNC_NAMES[m[1]];
 }
 const achievement = played ? parseFloat(achText) : 0;
-if (!sampleHtml && played) sampleHtml = row.outerHTML;
+if (!sampleHtml && played) sampleHtml = nodes.map((n) => n.outerHTML).join("");
 return {
+idx,
 difficulty: diff.name,
 diffShort: diff.short,
 diffKey: diff.key,
 title,
 kind,
 genre,
+jacket,
 level: norm(el.querySelector(".music_lv_block")?.textContent),
 played,
 achievement,
@@ -169,7 +180,10 @@ return out;
 }
 let sampleHtml = ""; // 调试用：一首歌在成绩页上的原始 HTML
 const keyOf = (s) => norm(s.title) + "|" + s.kind;
-const chartKey = (s) => keyOf(s) + "|" + s.difficulty;
+const chartKeys = (s) => [s.idx && `id:${s.idx}|${s.difficulty}`, `${keyOf(s)}|${s.difficulty}`].filter(Boolean);
+const songSet = (list) => ({ ids: new Set(list.map((s) => s.idx).filter(Boolean)), names: new Set(list.map(keyOf)) });
+const inSet = (set, s) => (s.idx && set.ids.size ? set.ids.has(s.idx) : set.names.has(keyOf(s)));
+const idStats = { b50WithId: 0, joinedById: 0, joinedByName: 0, notJoined: 0 }; // 调试用
 log("正在读取谱面定数表（otoge-db）...");
 let constData = [];
 try {
@@ -178,19 +192,28 @@ log(`✓ 定数表：${constData.length} 首`);
 } catch (e) {
 log(`× 定数表读取失败（${e}），将按等级估算定数，且不显示曲绘。`);
 }
-const metaIndex = new Map();
+const titleIndex = new Map(); // 曲名 → [{ m, pre, kind }]
+const jacketIndex = new Map(); // 曲绘文件名 → [{ m, pre, kind }]
+const push = (map, k, v) => (map.has(k) ? map.get(k).push(v) : map.set(k, [v]));
 for (const m of constData) {
 if (m.catcode === "宴会場" || m.lev_utage) continue;
 for (const [kind, pre] of [["STD", ""], ["DX", "dx_"]]) {
 if (!m[pre + "lev_bas"] && !m[pre + "lev_mas"]) continue;
-const k = norm(m.title) + "|" + kind;
-if (!metaIndex.has(k)) metaIndex.set(k, []);
-metaIndex.get(k).push({ m, pre });
+push(titleIndex, norm(m.title), { m, pre, kind });
+if (m.image_url) push(jacketIndex, m.image_url, { m, pre, kind });
 }
 }
-const matchLog = []; // 调试用：同名 / 找不到的曲目
+const matchLog = []; // 调试用：同名 / 找不到 / 改了种类的曲目
 function findMeta(s) {
-let c = metaIndex.get(keyOf(s)) || [];
+let c = (s.jacket && jacketIndex.get(s.jacket)) || titleIndex.get(norm(s.title)) || [];
+if (c.length > 1) {
+const d = c.filter(({ m, pre }) => m[`${pre}lev_${s.diffKey}`]);
+if (d.length) c = d;
+}
+if (c.length > 1 && s.kind) {
+const k = c.filter((x) => x.kind === s.kind);
+if (k.length) c = k;
+}
 if (c.length > 1 && s.genre) {
 const g = c.filter(({ m }) => norm(m.catcode) === s.genre);
 if (g.length) c = g;
@@ -199,9 +222,11 @@ if (c.length > 1) {
 const l = c.filter(({ m, pre }) => norm(m[`${pre}lev_${s.diffKey}`]) === s.level);
 if (l.length) c = l;
 }
-if (c.length !== 1 && matchLog.length < 200) {
-matchLog.push(`${s.difficulty} [${s.kind}] ${s.title} (${s.genre}) → ${c.length ? c.length + " 个候选" : "定数表里没有"}`);
+if ((c.length !== 1 || (s.kind && c[0].kind !== s.kind)) && matchLog.length < 200) {
+matchLog.push(`${s.difficulty} [${s.kind || "种类未知"}] ${s.title} (${s.genre}) → ${c.length ? (c.length > 1 ? c.length + " 个候选" : "按定数表改为 " + c[0].kind) : "定数表里没有"}`);
 }
+if (c[0]) s.kind = c[0].kind;
+s.kind = s.kind || "DX";
 return c[0];
 }
 const estimateConst = (lv) => {
@@ -217,7 +242,7 @@ s.const_unknown = ci > 0 ? "" : m ? "未确定" : "无数据";
 s.otoge_version = m ? versionIndexOf(m.version) : -1;
 s.version_idx = s.otoge_version;
 s.version = versionName(s.version_idx);
-s.img = m?.image_url || "";
+s.img = m?.image_url || s.jacket || "";
 s.dx_star = s.played ? dxStarOf(s.dx_score, s.dx_max) : 0;
 s.dx_ratio = s.dx_max ? s.dx_score / s.dx_max : 0;
 s.rating = calcRating(s.const, s);
@@ -273,14 +298,14 @@ log(`✓ BEST35 ${old35.length} 首 · NEW15 ${new15.length} 首${target.guessed
 let charts = null;
 let latestVersion = Math.max(versionNames.length - 1, ...constData.map((m) => versionIndexOf(m.version)));
 const newVersions = () => (latestVersion >= 25 ? [latestVersion, latestVersion - 1] : [latestVersion]);
-const membership = new Map(); // 版本序号 → Set(曲名|STD/DX)
+const membership = new Map(); // 版本序号 → songSet（曲目 ID + 曲名|STD/DX）
 async function loadVersion(v) {
 if (membership.has(v)) return membership.get(v);
-const set = new Set();
+let set = songSet([]);
 try {
 const page = await getDoc(`${NET}/record/musicVersion/search/?version=${v}&diff=3`);
-for (const s of parseList(page.doc)) set.add(keyOf(s));
-if (!set.size) diagnostics.push(`[version=${v}] ${diagnose(page)}`);
+set = songSet(parseList(page.doc));
+if (!set.names.size) diagnostics.push(`[version=${v}] ${diagnose(page)}`);
 } catch (e) {
 diagnostics.push(`[version=${v}] ${e}`);
 }
@@ -290,11 +315,11 @@ return set;
 }
 function applyVersions() {
 if (!charts) return;
-const official = new Map();
-for (const [v, set] of membership) for (const k of set) official.set(k, v);
 for (const s of charts) {
-s.version_idx = official.has(keyOf(s)) ? official.get(keyOf(s)) : s.otoge_version;
-s.version = versionName(s.version_idx);
+let v = s.otoge_version;
+for (const [ver, set] of membership) if (set.names.size && inSet(set, s)) v = ver;
+s.version_idx = v;
+s.version = versionName(v);
 }
 }
 async function loadAllCharts() {
@@ -324,16 +349,32 @@ officialLatest = Math.max(officialLatest, v);
 if (officialLatest >= 0) latestVersion = officialLatest;
 } catch (e) {}
 charts = list.map(enrich);
-const frames = new Map();
-for (const s of new15.concat(old35)) frames.set(chartKey(s), s.frame);
-for (const s of charts) s.frame = frames.get(chartKey(s)) || "";
+const byKey = new Map();
+for (const s of charts) for (const k of chartKeys(s)) if (!byKey.has(k)) byKey.set(k, s);
+const findChart = (s) => {
+const [first, second] = chartKeys(s);
+const byId = s.idx && byKey.get(first);
+if (byId) return [byId, "id"];
+const byName = byKey.get(second || first) ||
+charts.find((x) => x.difficulty === s.difficulty && norm(x.title) === norm(s.title) && Math.abs(x.achievement - s.achievement) < 1e-6);
+return [byName, byName ? "name" : ""];
+};
+for (const s of charts) s.frame = "";
+for (const s of new15.concat(old35)) {
+const [c] = findChart(s);
+if (c) c.frame = s.frame;
+}
 applyVersions();
 if (b50.length && b50Source === "rating 对象曲页面") {
-const byKey = new Map(charts.map((s) => [chartKey(s), s]));
+Object.assign(idStats, { b50WithId: b50.filter((s) => s.idx).length, joinedById: 0, joinedByName: 0, notJoined: 0 });
 for (const s of b50) {
-const c = byKey.get(chartKey(s));
-if (!c || Math.abs(c.achievement - s.achievement) > 1e-6) continue;
-Object.assign(s, { fc: s.fc || c.fc, sync: s.sync || c.sync, dx_score: s.dx_score || c.dx_score, dx_max: s.dx_max || c.dx_max });
+const [c, how] = findChart(s);
+if (!c || Math.abs(c.achievement - s.achievement) > 1e-6) {
+idStats.notJoined++;
+continue;
+}
+idStats[how === "id" ? "joinedById" : "joinedByName"]++;
+Object.assign(s, { kind: c.kind, genre: c.genre, fc: s.fc || c.fc, sync: s.sync || c.sync, dx_score: s.dx_score || c.dx_score, dx_max: s.dx_max || c.dx_max });
 enrich(s);
 }
 ratingInfo.new15 = sum(new15, "rating");
@@ -362,8 +403,8 @@ for (const v of vs) {
 sets.push(await loadVersion(v));
 await sleep(1000);
 }
-const official = sets.some((set) => set.size);
-const isNew = (s) => (official ? sets.some((set) => set.has(keyOf(s))) : vs.includes(s.otoge_version));
+const official = sets.some((set) => set.names.size);
+const isNew = (s) => (official ? sets.some((set) => inSet(set, s)) : vs.includes(s.otoge_version));
 const byRating = (a, b) => b.rating - a.rating || b.achievement - a.achievement;
 const rated = charts.filter((s) => s.rating > 0);
 new15 = rated.filter(isNew).sort(byRating).slice(0, 15);
@@ -393,10 +434,11 @@ DX: "#ff9a3c", STD: "#4aa3ff", star: ["#3a3745", "#5ccf6c", "#5ccf6c", "#ffb347"
 };
 const f = (w, px) => `${w} ${px}px ${FONT}`;
 const jacketCache = new Map();
+const jacketFails = new Set(); // 调试用：两个地址都没加载成功的曲绘
 const loadImg = (src, cors) => new Promise((resolve) => {
 const img = new Image();
 if (cors) img.crossOrigin = "anonymous";
-const t = setTimeout(() => resolve(null), 10000);
+const t = setTimeout(() => resolve(null), 15000);
 img.onload = () => { clearTimeout(t); resolve(img); };
 img.onerror = () => { clearTimeout(t); resolve(null); };
 img.src = src;
@@ -404,7 +446,9 @@ img.src = src;
 function loadJacket(id) {
 if (!id) return Promise.resolve(null);
 if (!jacketCache.has(id)) {
-jacketCache.set(id, loadImg(JACKET_URL + id, true).then((img) => img || (TEST ? null : loadImg(`${NET}/img/Music/${id}`, false))));
+jacketCache.set(id, loadImg(JACKET_URL + id, true)
+.then((img) => img || (TEST ? null : loadImg(`${NET}/img/Music/${id}`, false)))
+.then((img) => (img || jacketFails.add(id), img)));
 }
 return jacketCache.get(id);
 }
@@ -547,7 +591,13 @@ const { W, PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
 const rowsOf = (n) => Math.max(1, Math.ceil(n / COLS));
 const H = HEAD + sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0) + FOOT;
 const jackets = new Map();
-await Promise.all(sections.flatMap((sec) => sec.rows).map(async (s) => jackets.set(s, await loadJacket(s.img))));
+const queue = sections.flatMap((sec) => sec.rows);
+await Promise.all(Array.from({ length: 6 }, async () => {
+while (queue.length) {
+const s = queue.shift();
+jackets.set(s, await loadJacket(s.img));
+}
+}));
 const cv = document.createElement("canvas");
 cv.width = W;
 cv.height = H;
@@ -628,7 +678,10 @@ throw e;
 }
 }
 const stamp = new Date().toISOString().slice(0, 10);
-const countBy = (arr, k, v) => arr.filter((s) => s[k] === v).length;
+const maxMin = (arr) => {
+const r = arr.map((s) => s.rating);
+return r.length ? `最高 ${Math.max(...r)} · 最低 ${Math.min(...r)}` : "—";
+};
 const b50Image = () => {
 const calc = ratingInfo.total;
 const diff = player.rating ? calc - player.rating : 0;
@@ -638,9 +691,8 @@ player.rating
 ? `游戏内 Rating（maimai DX NET）· 按定数计算 ${calc}${diff === 0 ? "（一致）" : `（差 ${diff > 0 ? "+" : ""}${diff}）`}`
 : `BEST35 ${ratingInfo.old35} + NEW15 ${ratingInfo.new15}（按定数计算）`,
 [
-["BEST35", `${ratingInfo.old35}`, `${old35.length}曲 · 平均 ${avg(old35, "rating").toFixed(1)} · 最低 ${old35.length ? old35[old35.length - 1].rating : "—"}`],
-["NEW15", `${ratingInfo.new15}`, `${new15.length}曲 · 平均 ${avg(new15, "rating").toFixed(1)} · 最低 ${new15.length ? new15[new15.length - 1].rating : "—"}`],
-["平均达成率", `${avg(b50, "achievement").toFixed(4)}%`, `SSS+ ${countBy(b50, "rank", "SSS+")} · SSS ${countBy(b50, "rank", "SSS")} · SS+ ${countBy(b50, "rank", "SS+")}`],
+["BEST35", `${ratingInfo.old35}`, `${old35.length}曲 · ${maxMin(old35)}`],
+["NEW15", `${ratingInfo.new15}`, `${new15.length}曲 · ${maxMin(new15)}`],
 ],
 [
 { name: "BEST35", note: `合计 ${ratingInfo.old35}`, rows: old35, label: (s) => s.frame },
@@ -676,7 +728,7 @@ a.click();
 a.remove();
 };
 const download = (name, text, type) => saveFile(name, new Blob([text], { type }));
-const songKeys = ["frame", "difficulty", "kind", "const", "title", "genre", "version", "achievement", "rank", "fc", "sync", "dx_score", "dx_max", "dx_star", "rating", "const_unknown"];
+const songKeys = ["frame", "difficulty", "kind", "const", "title", "genre", "version", "achievement", "rank", "fc", "sync", "dx_score", "dx_max", "dx_star", "rating", "const_unknown", "idx"];
 const compactKeys = ["frame", "difficulty", "const", "title", "achievement", "fc", "rating"];
 const exportRows = (rows) => rows.map((s) => ({ ...s, achievement: s.played ? s.achievement.toFixed(4) : "", const: constText(s) }));
 let shownRows = [];
@@ -750,7 +802,9 @@ rating: ratingInfo,
 player,
 latestVersion: `${latestVersion} ${versionName(latestVersion)}`,
 unknownConst: (charts || b50).filter((s) => s.played && s.const_unknown).map((s) => `${s.difficulty} [${s.kind}] ${s.title} (${s.const_unknown})`).slice(0, 100),
+idStats,
 matchLog,
+noJacket: b50.filter((s) => !s.img || jacketFails.has(s.img)).map((s) => `${s.frame} ${s.title} [${s.kind}] img=${s.img || "无"}${s.jacket ? " 页面曲绘=" + s.jacket : ""}`),
 diagnostics,
 sampleHtml: sampleHtml.replace(/\s+/g, " ").slice(0, 3000),
 }, null, 1);
