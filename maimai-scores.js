@@ -723,7 +723,8 @@ return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 };
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
 const nameKeyOf = (title, kind, diff) => `${norm(title)}|${kind}|${diff}`;
-const emptyHist = () => ({ v: 1, game: "maimai", name: "", obs: [], snaps: [] });
+const HIST_V = 2;
+const emptyHist = () => ({ v: HIST_V, game: "maimai", name: "", since: "", obs: [], snaps: [] });
 const playId = (o) => `${o.t}|${norm(o.n)}|${o.d}|${o.a}`;
 const obsId = (o) => (o.src === "p" ? "p|" + playId(o) : [o.t, o.k, o.a, o.fc, o.sy, o.x, o.src].join("|"));
 const FC_RANK = { "": 0, FC: 1, "FC+": 2, AP: 3, "AP+": 4 };
@@ -870,6 +871,7 @@ return { state, updates };
 function mergeHist(a, b) {
 const out = emptyHist();
 out.name = b.name || a.name;
+out.since = [a.since || "", b.since || ""].sort().pop();
 const seen = new Map();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
@@ -877,10 +879,10 @@ const prev = seen.get(id);
 if (!prev) { seen.set(id, o); out.obs.push(o); }
 else if (prev.r == null && o.r != null) Object.assign(prev, { r: o.r, dr: o.dr });
 });
-out.obs.sort(byTime);
+out.obs = out.obs.filter((o) => o.t >= out.since).sort(byTime);
 const snaps = new Map();
 [...a.snaps, ...b.snaps].forEach((s) => snaps.set(s.t, s));
-out.snaps = [...snaps.values()].sort(byTime);
+out.snaps = [...snaps.values()].filter((s) => s.t >= out.since).sort(byTime);
 return out;
 }
 const ratingOfState = (k, st) => {
@@ -892,6 +894,7 @@ const sameSnap = (a, b) => a && b && a.r === b.r && a.c === b.c && JSON.stringif
 function applyUpdate(hist, plays) {
 const t = nowStr();
 if (player.name) hist.name = player.name;
+if (!hist.since) hist.since = t; // 起点：这次的成绩扫描和快照就是历史的开始
 const first = new Map();
 hist.obs = hist.obs.filter((o) => {
 const prev = first.get(obsId(o));
@@ -995,7 +998,7 @@ const histKey = () => "maimai-hist:" + (player.name || "_");
 const loadLocalHist = () => {
 try {
 const h = JSON.parse(localStorage.getItem(histKey()) || "null");
-return h && h.obs ? h : emptyHist();
+return h && h.obs && h.v === HIST_V ? h : emptyHist();
 } catch (e) {
 return emptyHist();
 }
@@ -1054,7 +1057,7 @@ return true;
 const syncMerge = async (acc, local) => {
 for (let attempt = 0; attempt < 3; attempt++) {
 const { data, sha } = await syncGet(acc);
-const merged = data && data.obs ? mergeHist(data, local) : local;
+const merged = data && data.obs && data.v === HIST_V ? mergeHist(data, local) : local;
 if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
 if (await syncPut(acc, merged, sha)) return merged;
 }
@@ -1079,7 +1082,7 @@ return acc;
 };
 let syncNote = "";
 let hist = emptyHist();
-async function recordAndSync(forceAsk) {
+async function recordAndSync(forceAsk, reset) {
 let plays = [];
 let playNote = "";
 if (!allCharts.length) {
@@ -1093,10 +1096,12 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-const local = loadLocalHist();
+const local = reset ? emptyHist() : loadLocalHist();
+if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((s) => s.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
+plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
 const recorded = new Set(local.obs.filter((o) => o.src === "p").map(playId));
-const need = lastQuery ? plays.filter((o) => o.pid && o.nr && o.t >= lastQuery && !recorded.has(playId(o))) : [];
+const need = plays.filter((o) => o.pid && o.nr && !recorded.has(playId(o)));
 if (need.length) log(`上次查询（${lastQuery}）之后有 ${need.length} 次刷新纪录的游玩，读取游玩详情 ...`);
 for (const [i, o] of need.entries()) {
 log(`正在读取游玩详情（${i + 1}/${need.length}）...`);
@@ -1786,18 +1791,24 @@ return d;
 };
 const { state, updates } = derive(hist);
 const info = card();
-info.innerHTML = `<div>${esc(syncNote)}</div><div style="color:#555">${hist.snaps.length} 个 Rating 快照${hist.snaps[0] ? "（" + hist.snaps[0].t.slice(0, 10) + " 起）" : ""} · ` +
+info.innerHTML = `<div>${esc(syncNote)}</div><div style="color:#555">${hist.since ? "从 " + esc(hist.since) + " 开始记录 · " : ""}${hist.snaps.length} 个 Rating 快照 · ` +
 `${hist.obs.filter((o) => o.src === "p").length} 条游玩记录 · ${updates.length} 次推分</div>`;
-if (SYNC_URL) {
 const row = document.createElement("div");
-row.style.cssText = "margin-top:6px";
+row.style.cssText = "margin-top:6px;display:flex;flex-wrap:wrap;gap:6px";
+if (SYNC_URL) {
 mkBtn("更改同步名字", async () => {
 await recordAndSync(true);
 trendCache = null;
 render();
 }, row);
-info.appendChild(row);
 }
+mkBtn("从现在重新开始记录", async () => {
+if (!confirm("清空这个账号的全部历史记录" + (SYNC_URL ? "（本机和云端）" : "") + "，把现在全部谱面的成绩当作新的起点，从现在开始重新记录？\n清空后无法恢复。")) return;
+await recordAndSync(false, true);
+trendCache = null;
+render();
+}, row);
+info.appendChild(row);
 const songs = new Map();
 hist.obs.forEach((o) => {
 const k = canon(o);
