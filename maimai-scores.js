@@ -722,37 +722,28 @@ const m = t.match(/(\d+)\/(\d+)\/(\d+) (\d+):(\d+)/);
 return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 };
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
-const histKeyOf = (s) => (s.idx ? `id:${s.idx}|${s.difficulty}` : `n:${keyOf(s)}|${s.difficulty}`);
 const nameKeyOf = (title, kind, diff) => `${norm(title)}|${kind}|${diff}`;
 const emptyHist = () => ({ v: 1, game: "maimai", name: "", obs: [], snaps: [] });
 const obsId = (o) => [o.t, o.k, o.a, o.fc, o.sy, o.x, o.src].join("|");
 const playId = (o) => `${o.t}|${o.nk}|${o.a}`;
 const FC_RANK = { "": 0, FC: 1, "FC+": 2, AP: 3, "AP+": 4 };
 const SYNC_RANK = { "": 0, SYNC: 1, FS: 2, "FS+": 3, FDX: 4, "FDX+": 5 };
-const chartByK = new Map(allCharts.map((s) => [histKeyOf(s), s]));
-const chartsByName = new Map();
+const chartsByName = new Map(); // 曲名|DX/STD|难度 → [谱面]
 for (const s of allCharts) {
 const k = nameKeyOf(s.title, s.kind, s.difficulty);
 chartsByName.set(k, (chartsByName.get(k) || []).concat(s));
 }
+const stableKey = (nk, j) => (chartsByName.get(nk)?.length > 1 && j ? `${nk}|${j}` : nk);
+const histKeyOf = (s) => stableKey(nameKeyOf(s.title, s.kind, s.difficulty), s.img);
+const chartByK = new Map(allCharts.map((s) => [histKeyOf(s), s])); // 谱面键 → 现在的谱面
 const chartByName = (nk, j) => {
 let c = chartsByName.get(nk) || [];
 if (c.length > 1 && j) c = c.filter((s) => s.img === j);
 return c.length === 1 ? c[0] : null;
 };
-const canonCache = new Map();
-const canon = (o) => {
-if (!canonCache.has(o.k)) {
-const c = chartByK.has(o.k) ? null : chartByName(o.nk, o.j);
-canonCache.set(o.k, c ? histKeyOf(c) : o.k);
-}
-return canonCache.get(o.k);
-};
-const rowKey = (e) => canon({ k: e[0], nk: nameKeyOf(e[1], e[6], e[5]) });
-const b50Key = (s) => {
-const [c] = findChart(s);
-return histKeyOf(c || s);
-};
+const canon = (o) => stableKey(o.nk, o.j);
+const rowKey = (e) => stableKey(nameKeyOf(e[1], e[6], e[5]), e[7]);
+const b50Chart = (s) => findChart(s)[0] || s;
 let playlogSample = ""; // 调试用：プレイ履歴第一条的原始 HTML
 const PLAY_FC = { app: "AP+", applus: "AP+", ap: "AP", fcp: "FC+", fcplus: "FC+", fc: "FC" };
 const PLAY_SYNC = { fsdp: "FDX+", fsdplus: "FDX+", fdxp: "FDX+", fdxplus: "FDX+", fsd: "FDX", fdx: "FDX", fsp: "FS+", fsplus: "FS+", fs: "FS", sync: "SYNC", maxsync: "SYNC" };
@@ -790,7 +781,7 @@ if (both.length === 1) kd = both[0];
 }
 const nk = nameKeyOf(n, kd, diff.name);
 const c = kd ? chartByName(nk, j) : null;
-const o = { t, k: c ? histKeyOf(c) : `n:${norm(n)}|${kd}|${diff.name}`, nk, n, kd, d: diff.name, src: "p",
+const o = { t, k: c ? histKeyOf(c) : nk, nk, n, kd, d: diff.name, src: "p",
 a: Math.round(a * 10000), fc: badge(PLAY_FC), sy: badge(PLAY_SYNC), x: dx ? num(dx[1]) : 0, xm: dx ? num(dx[2]) : 0 };
 if (j) o.j = j;
 if (srcs.some((src) => /new_?record/i.test(src))) o.nr = 1;
@@ -895,7 +886,10 @@ const old = state[o.k];
 if (!old || absorb(old, o).ch.length) hist.obs.push(o);
 }
 hist.obs.sort(byTime);
-const row = (s) => [b50Key(s), s.title, Math.round(s.achievement * 10000), s.rating, s.fc || "", s.difficulty, s.kind];
+const row = (s) => {
+const c = b50Chart(s);
+return [histKeyOf(c), s.title, Math.round(s.achievement * 10000), s.rating, s.fc || "", s.difficulty, c.kind, c.img || ""];
+};
 const snap = {
 t,
 r: player.rating || ratingInfo.total,
@@ -1078,7 +1072,8 @@ log(`正在读取游玩详情（${i + 1}/${need.length}）...`);
 try {
 const det = parsePlaylogDetail((await getDoc(`${NET}/record/playlogDetail/?idx=${encodeURIComponent(o.pid)}`)).doc);
 if (det.r) { o.r = det.r; if (det.dr != null) o.dr = det.dr; }
-if (det.id && chartByK.has(`id:${det.id}|${o.d}`)) o.k = `id:${det.id}|${o.d}`;
+const c = det.id && allCharts.find((x) => x.idx === det.id && x.difficulty === o.d);
+if (c) Object.assign(o, { k: histKeyOf(c), nk: nameKeyOf(c.title, c.kind, c.difficulty), kd: c.kind, j: c.img || o.j });
 } catch (e) {}
 await sleep(1000);
 }
@@ -1253,7 +1248,7 @@ const a = toMap(prev), b = toMap(last);
 const loose = (e) => `${norm(e[1])}|${e[5]}`;
 const onlyA = [...a.keys()].filter((k) => !b.has(k)), onlyB = [...b.keys()].filter((k) => !a.has(k));
 for (const kb of onlyB) {
-const same = onlyA.filter((ka) => loose(a.get(ka)) === loose(b.get(kb)));
+const same = onlyA.filter((ka) => a.has(ka) && loose(a.get(ka)) === loose(b.get(kb)));
 const sameB = onlyB.filter((x) => loose(b.get(x)) === loose(b.get(kb)));
 if (same.length === 1 && sameB.length === 1) {
 a.set(kb, a.get(same[0]));
