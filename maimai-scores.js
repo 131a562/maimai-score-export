@@ -8,7 +8,7 @@ const NET = location.origin + "/maimai-mobile";
 const CONST_URL = "https://otoge-db.net/maimai/data/music-ex.json";
 const JACKET_URL = "https://otoge-db.net/maimai/jacket/";
 const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl（历史记录云端同步）
-const SYNC_URL = TEST ? "" : /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
+const SYNC_URL = TEST ? TEST.syncUrl || "" : /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
 const ALL_DIFFS = [
 { id: 0, cls: "basic", name: "BASIC", short: "BAS", key: "bas" },
 { id: 1, cls: "advanced", name: "ADVANCED", short: "ADV", key: "adv" },
@@ -724,7 +724,7 @@ return new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime();
 const byTime = (a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
 const nameKeyOf = (title, kind, diff) => `${norm(title)}|${kind}|${diff}`;
 const HIST_V = 2;
-const emptyHist = () => ({ v: HIST_V, game: "maimai", name: "", since: "", obs: [], snaps: [] });
+const emptyHist = () => ({ v: HIST_V, game: "maimai", name: "", since: "", resetAt: "", obs: [], snaps: [] });
 const playId = (o) => `${o.t}|${norm(o.n)}|${o.d}|${o.a}`;
 const obsId = (o) => (o.src === "p" ? "p|" + playId(o) : [o.t, o.k, o.a, o.fc, o.sy, o.x, o.src].join("|"));
 const FC_RANK = { "": 0, FC: 1, "FC+": 2, AP: 3, "AP+": 4 };
@@ -881,7 +881,9 @@ return { state, updates };
 function mergeHist(a, b) {
 const out = emptyHist();
 out.name = b.name || a.name;
-out.since = [a.since || "", b.since || ""].sort().pop();
+out.resetAt = [a.resetAt || "", b.resetAt || ""].sort().pop();
+const sinces = [a.since, b.since].filter(Boolean).sort();
+out.since = [out.resetAt, sinces[0] || ""].sort().pop();
 const seen = new Map();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
@@ -1091,11 +1093,26 @@ return acc;
 };
 let syncNote = "";
 let hist = emptyHist();
+async function getAccount(forceAsk) {
+const accounts = loadAccounts();
+let acc = forceAsk ? undefined : accounts[player.name];
+if (acc === undefined) {
+await syncFetch("_ping"); // 先确认连得上，连不上就不弹窗询问（抛出的错误会显示在「历史」页）
+acc = await askAccount();
+accounts[player.name] = acc;
+saveAccounts(accounts);
+}
+return acc;
+}
 async function recordAndSync(forceAsk, reset) {
 let plays = [];
 let playNote = "";
 if (!allCharts.length) {
 syncNote = "没有读到全曲成绩，本次没有记录历史";
+return;
+}
+if (!player.name) {
+syncNote = "没有读到玩家名，本次没有记录历史";
 return;
 }
 try {
@@ -1105,7 +1122,20 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-const local = reset ? emptyHist() : loadLocalHist();
+let local = reset ? emptyHist() : loadLocalHist();
+let acc = null, syncErr = null;
+if (SYNC_URL) {
+try {
+acc = await getAccount(forceAsk);
+if (acc && !reset && !local.since) {
+log("本机没有历史记录，正在读取云端的记录 ...");
+const { data } = await syncGet(acc);
+if (data && data.obs && data.v === HIST_V) local = mergeHist(data, local);
+}
+} catch (e) {
+syncErr = e;
+}
+}
 if (!local.since) log("历史记录从这次开始：保存当前全部已游玩谱面的成绩作为起点（之前的游玩不记）");
 const lastQuery = [...local.snaps.map((s) => s.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
 plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
@@ -1124,19 +1154,15 @@ if (c) Object.assign(o, { k: histKeyOf(c), nk: nameKeyOf(c.title, c.kind, c.diff
 await sleep(1000);
 }
 hist = applyUpdate(local, plays);
+if (reset) hist.resetAt = hist.since; // 「从现在重新开始记录」：同步时，这个时间之前的记录（包括别的设备上的）都不要
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
 if (!SYNC_URL) return;
-const accounts = loadAccounts();
-const me = player.name || "_";
-let acc = forceAsk ? undefined : accounts[me];
-try {
-if (acc === undefined) {
-await syncFetch("_ping"); // 先确认连得上，连不上就不弹窗询问（抛出的错误会显示在「历史」页）
-acc = await askAccount();
-accounts[me] = acc;
-saveAccounts(accounts);
+if (syncErr) {
+syncNote = "同步失败：" + syncErr.message + "。已保存在本机，下次运行会重试" + playNote;
+return;
 }
 if (!acc) { syncNote += "（未开启云端同步）"; return; }
+try {
 log("正在同步历史记录 ...");
 hist = await syncMerge(acc, hist);
 saveLocalHist(hist);
