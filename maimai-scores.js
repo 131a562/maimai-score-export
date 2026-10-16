@@ -849,16 +849,26 @@ if (!first) ch.push(s1 > s0 ? { type: "star", from: s0, to: s1 } : { type: "dx",
 return { next, ch };
 }
 const isPush = (c) => c.type !== "dx";
+const isFirstPlay = (o, since) => !!since && (o.src === "p" || o.t > since);
 function derive(hist) {
-const state = {}, scanned = new Set(), updates = [];
+const state = {}, scanned = new Set(), fresh = new Set(), updates = [];
+const since = hist.since || "";
 hist.obs.slice().sort(byTime).forEach((o0) => {
 const o = { ...o0, k: canon(o0) };
 const before = state[o.k];
-const known = scanned.has(o.k);
+const known = scanned.has(o.k) || fresh.has(o.k);
 if (o.src === "b") scanned.add(o.k);
 if (!before) {
 state[o.k] = absorb(blankState(), o).next;
-if (o.src === "p" && o.nr) updates.push({ ...o, before: null, after: state[o.k], changes: [{ type: "ach", from: null, to: o.a }] });
+const first = isFirstPlay(o, since);
+if (first) fresh.add(o.k); // 第一次打之后，最佳是确定的
+if (first || (o.src === "p" && o.nr)) {
+const s1 = state[o.k];
+const changes = [{ type: "ach", from: null, to: s1.a }];
+if (s1.fc) changes.push({ type: "fc", from: "", to: s1.fc });
+if (s1.sy && s1.sy !== "SYNC") changes.push({ type: "sync", from: "", to: s1.sy });
+updates.push({ ...o, before: null, after: s1, changes });
+}
 return;
 }
 const { next, ch } = absorb(before, o);
@@ -988,8 +998,7 @@ function changeText(u) {
 const parts = [];
 for (const c of u.changes) {
 if (c.type === "ach") parts.push(c.from != null ? `${fmtAch(c.from)} → ${fmtAch(c.to)}（+${((c.to - c.from) / 10000).toFixed(4)}%）` : `${fmtAch(c.to)}（首次）`);
-else if (c.type === "fc") parts.push(`${c.from || "—"}→${c.to}`);
-else if (c.type === "sync") parts.push(`${c.from || "—"}→${c.to}`);
+else if (c.type === "fc" || c.type === "sync") parts.push(u.before ? `${c.from || "—"}→${c.to}` : c.to);
 else if (c.type === "star") parts.push(`DX★${c.from}→★${c.to}`);
 }
 return parts.join(" · ");
@@ -1101,8 +1110,9 @@ if (!local.since) log("历史记录从这次开始：保存当前全部已游玩
 const lastQuery = [...local.snaps.map((s) => s.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
 plays = lastQuery ? plays.filter((o) => o.t >= lastQuery) : [];
 const recorded = new Set(local.obs.filter((o) => o.src === "p").map(playId));
-const need = plays.filter((o) => o.pid && o.nr && !recorded.has(playId(o)));
-if (need.length) log(`上次查询（${lastQuery}）之后有 ${need.length} 次刷新纪录的游玩，读取游玩详情 ...`);
+const seenCharts = new Set(local.obs.map(canon));
+const need = plays.filter((o) => o.pid && (o.nr || (local.since && !seenCharts.has(canon(o)))) && !recorded.has(playId(o)));
+if (need.length) log(`上次查询（${lastQuery}）之后有 ${need.length} 次刷新纪录 / 第一次打的游玩，读取游玩详情 ...`);
 for (const [i, o] of need.entries()) {
 log(`正在读取游玩详情（${i + 1}/${need.length}）...`);
 try {
