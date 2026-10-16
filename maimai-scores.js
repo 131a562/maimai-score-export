@@ -726,6 +726,7 @@ const histKeyOf = (s) => (s.idx ? `id:${s.idx}|${s.difficulty}` : `n:${keyOf(s)}
 const nameKeyOf = (title, kind, diff) => `${norm(title)}|${kind}|${diff}`;
 const emptyHist = () => ({ v: 1, game: "maimai", name: "", obs: [], snaps: [] });
 const obsId = (o) => [o.t, o.k, o.a, o.fc, o.sy, o.x, o.src].join("|");
+const playId = (o) => `${o.t}|${o.nk}|${o.a}`;
 const FC_RANK = { "": 0, FC: 1, "FC+": 2, AP: 3, "AP+": 4 };
 const SYNC_RANK = { "": 0, SYNC: 1, FS: 2, "FS+": 3, FDX: 4, "FDX+": 5 };
 const chartByK = new Map(allCharts.map((s) => [histKeyOf(s), s]));
@@ -792,9 +793,28 @@ const o = { t, k: c ? histKeyOf(c) : `n:${norm(n)}|${kd}|${diff.name}`, nk, n, k
 a: Math.round(a * 10000), fc: badge(PLAY_FC), sy: badge(PLAY_SYNC), x: dx ? num(dx[1]) : 0, xm: dx ? num(dx[2]) : 0 };
 if (j) o.j = j;
 if (srcs.some((src) => /new_?record/i.test(src))) o.nr = 1;
+Object.defineProperty(o, "pid", { value: within(nodes, "input[name=idx]")[0]?.value || "", enumerable: false });
 return o;
 }).filter(Boolean);
 }
+function parsePlaylogDetail(doc) {
+const html = doc.body ? doc.body.innerHTML : "";
+const out = {};
+const r = num(doc.querySelector(".rating_block")?.textContent);
+if (r > 0) {
+out.r = r;
+const i = html.indexOf("rating_block");
+const m = html.slice(i, i + 800).replace(/<[^>]+>/g, " ").match(/\(\s*([+\-−]?\s*\d+)\s*\)/);
+if (m) out.dr = parseInt(m[1].replace(/[−\s]/g, (c) => (c === "−" ? "-" : "")));
+}
+const ids = [...html.matchAll(/musicDetail\/\?idx=([^"&]+)/g)];
+const jpos = html.search(/img\/Music\//);
+const best = ids.sort((a, b) => Math.abs(a.index - jpos) - Math.abs(b.index - jpos))[0];
+if (best) out.id = decodeURIComponent(best[1].replace(/&amp;/g, "&"));
+if (!playlogDetailSample) playlogDetailSample = (html.slice(Math.max(0, html.indexOf("rating_block") - 600), html.indexOf("rating_block") + 600) || html.slice(0, 1200)).replace(/\s+/g, " ");
+return out;
+}
+let playlogDetailSample = ""; // 调试用：游玩详情页 Rating 附近的原始 HTML
 const blankState = () => ({ a: -1, fc: "", sy: "", x: 0, xm: 0 });
 function absorb(state, o) {
 const ch = [];
@@ -834,10 +854,12 @@ return { state, updates };
 function mergeHist(a, b) {
 const out = emptyHist();
 out.name = b.name || a.name;
-const seen = new Set();
+const seen = new Map();
 [...a.obs, ...b.obs].forEach((o) => {
 const id = obsId(o);
-if (!seen.has(id)) { seen.add(id); out.obs.push(o); }
+const prev = seen.get(id);
+if (!prev) { seen.set(id, o); out.obs.push(o); }
+else if (prev.r == null && o.r != null) Object.assign(prev, { r: o.r, dr: o.dr });
 });
 out.obs.sort(byTime);
 const snaps = new Map();
@@ -855,7 +877,13 @@ function applyUpdate(hist, plays) {
 const t = nowStr();
 if (player.name) hist.name = player.name;
 const ids = new Set(hist.obs.map(obsId));
-plays.forEach((o) => { if (!ids.has(obsId(o))) { ids.add(obsId(o)); hist.obs.push(o); } });
+const playIds = new Set(hist.obs.filter((o) => o.src === "p").map(playId));
+plays.forEach((o) => {
+if (ids.has(obsId(o)) || playIds.has(playId(o))) return;
+ids.add(obsId(o));
+playIds.add(playId(o));
+hist.obs.push(o);
+});
 const { state } = derive(hist);
 for (const s of allCharts) {
 if (!s.played) continue;
@@ -912,15 +940,21 @@ out.set(u, res);
 return out;
 }
 const GOOD = "#7ee0a0";
-function impactText(im) {
+function impactText(im, u) {
+if (u && u.r != null) {
+const where = im && im.frame ? (im.entered ? "进入 " + im.frame : im.inFrame ? im.frame + " 内提升" : "") : "";
+const d = u.dr != null ? `（${signedInt(u.dr)}）` : "";
+return [[`DX Rating ${u.r}${d} · 游戏记录`, where].filter(Boolean).join(" · "), u.dr > 0 ? GOOD : C.muted];
+}
 if (!im || im.noSnap) return ["之前没有快照，无法推算账号 Rating", C.line];
 if (im.noConst) return ["定数未知，无法推算账号 Rating", C.muted];
 if (im.noRating) return ["单曲 rating 不变", C.muted];
 const head = im.entered ? "进入 " + im.frame : im.inFrame ? im.frame + " 内提升" : "未进入 " + im.frame;
-if (im.delta > 0) return [head + " · 账号 Rating +" + im.delta, GOOD];
-return [head + " · 账号 Rating 不变", C.muted];
+if (im.delta > 0) return [head + " · 账号 Rating +" + im.delta + "（推算）", GOOD];
+return [head + " · 账号 Rating 不变（推算）", C.muted];
 }
 const fmtAch = (a) => (a / 10000).toFixed(4) + "%";
+const signedInt = (x) => (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(x);
 function changeText(u) {
 const parts = [];
 for (const c of u.changes) {
@@ -1033,7 +1067,23 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 } catch (e) {
 playNote = "（プレイ履歴读取失败）";
 }
-hist = applyUpdate(loadLocalHist(), plays);
+const local = loadLocalHist();
+const recorded = new Map(local.obs.filter((o) => o.src === "p").map((o) => [playId(o), o]));
+const need = plays.filter((o) => o.pid && !(recorded.get(playId(o))?.r != null) && (o.nr || /^AP/.test(o.fc)));
+for (const [i, o] of need.entries()) {
+log(`正在读取游玩详情（${i + 1}/${need.length}）...`);
+try {
+const det = parsePlaylogDetail((await getDoc(`${NET}/record/playlogDetail/?idx=${encodeURIComponent(o.pid)}`)).doc);
+if (det.r) { o.r = det.r; if (det.dr != null) o.dr = det.dr; }
+if (det.id && chartByK.has(`id:${det.id}|${o.d}`)) o.k = `id:${det.id}|${o.d}`;
+} catch (e) {}
+await sleep(1000);
+}
+for (const o of plays) {
+const old = recorded.get(playId(o));
+if (old && old.r == null && o.r != null) Object.assign(old, { r: o.r, dr: o.dr });
+}
+hist = applyUpdate(local, plays);
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
 if (!SYNC_URL) return;
 const accounts = loadAccounts();
@@ -1075,7 +1125,6 @@ cv.toBlob((b) => (b ? resolve({ blob: b, url: URL.createObjectURL(b) }) : reject
 reject(e);
 }
 });
-const signedInt = (x) => (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(x);
 function histStat(ctx, label, value, right, color, big) {
 ctx.textAlign = "right";
 ctx.fillStyle = C.muted;
@@ -1242,7 +1291,8 @@ ctx.fillText(`${snaps.length} 个快照${snaps[0] ? `（${snaps[0].t.slice(0, 10
 let y = 150;
 const pts = (fn) => snaps.filter((s) => fn(s) != null).map((s) => [timeMs(s.t), fn(s)]);
 lineChart(ctx, HP, y, HW - HP * 2, 360, [
-{ label: "DX RATING（游戏内）", color: C["SSS+"], pts: pts((s) => s.r), width: 4 },
+{ label: "DX RATING（快照）", color: C["SSS+"], pts: pts((s) => s.r), width: 4 },
+{ label: "每次游玩后", color: C.plat, pts: hist.obs.filter((o) => o.src === "p" && o.r).map((o) => [timeMs(o.t), o.r]), line: false, dot: 3 },
 ], { minSpan: 20, fmt: (v) => String(Math.round(v)) });
 if (snaps.length === 1) {
 ctx.fillStyle = C.muted;
@@ -1336,7 +1386,7 @@ ctx.font = f(800, 15);
 ctx.fillText(fit(ctx, what, 560), HW - HP, y);
 ctx.textAlign = "left";
 const rw = drawRatingChange(ctx, HW - HP, y + 24, u, 14);
-const [itext, icolor] = impactText(impact.get(u));
+const [itext, icolor] = impactText(impact.get(u), u);
 ctx.fillStyle = icolor;
 ctx.font = f(icolor === GOOD ? 700 : 500, 14);
 ctx.fillText(fit(ctx, itext, HW - HP * 2 - 150 - rw - 20), HP + 150, y + 24);
@@ -1419,7 +1469,7 @@ ctx.fillStyle = C["SSS+"];
 ctx.font = f(800, 16);
 ctx.fillText(fit(ctx, changeText(u), HW - HP * 2 - 180), HP + 170, y);
 const rw = drawRatingChange(ctx, HW - HP, y + 24, u, 14);
-const [itext, icolor] = impactText(impact.get(u));
+const [itext, icolor] = impactText(impact.get(u), u);
 ctx.fillStyle = icolor;
 ctx.font = f(icolor === GOOD ? 700 : 500, 14);
 ctx.fillText(fit(ctx, itext, HW - HP * 2 - 170 - rw - 20), HP + 170, y + 24);
@@ -1461,13 +1511,17 @@ if (before >= 0 && o.a > before) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECOR
 else if (before < 0 && o.nr) { ctx.fillStyle = GOOD; ctx.fillText("NEW RECORD", nx, y); }
 else if (before >= 0) { ctx.fillStyle = C.muted; ctx.font = f(500, 14); ctx.fillText("距最佳 −" + ((before - o.a) / 10000).toFixed(4) + "%", nx, y); }
 const r = ratingOfState(e.k, { a: o.a, fc: o.fc });
-if (r != null) {
+let rx = HW - HP;
+const segR = (text, color, w = 500) => {
+ctx.font = f(w, 14);
+ctx.fillStyle = color;
 ctx.textAlign = "right";
-ctx.fillStyle = C.muted;
-ctx.font = f(500, 14);
-ctx.fillText("这次的 Rating " + r, HW - HP, y);
+ctx.fillText(text, rx, y);
+rx -= ctx.measureText(text).width + 12;
 ctx.textAlign = "left";
-}
+};
+if (o.r != null) segR(`DX Rating ${o.r}${o.dr != null ? "（" + signedInt(o.dr) + "）" : ""}`, o.dr > 0 ? GOOD : C.muted, o.dr > 0 ? 700 : 500);
+if (r != null) segR("单曲 " + r, C.muted);
 y += ROW;
 });
 ctx.fillStyle = C.muted;
@@ -1580,6 +1634,7 @@ unknownConst: (charts || b50).filter((s) => s.played && s.const_unknown).map((s)
 idStats,
 history: { snaps: hist.snaps.length, obs: hist.obs.length, plays: hist.obs.filter((o) => o.src === "p").length, syncNote },
 playlogSample,
+playlogDetailSample,
 matchLog,
 noJacket: b50.filter((s) => !s.img || jacketFails.has(s.img)).map((s) => `${s.frame} ${s.title} [${s.kind}] img=${s.img || "无"}${s.jacket ? " 页面曲绘=" + s.jacket : ""}`),
 diagnostics,
