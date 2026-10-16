@@ -748,6 +748,7 @@ canonCache.set(o.k, c ? histKeyOf(c) : o.k);
 }
 return canonCache.get(o.k);
 };
+const rowKey = (e) => canon({ k: e[0], nk: nameKeyOf(e[1], e[6], e[5]) });
 const b50Key = (s) => {
 const [c] = findChart(s);
 return histKeyOf(c || s);
@@ -912,7 +913,7 @@ return hist;
 function accountImpact(hist, updates) {
 const snaps = hist.snaps;
 const out = new Map();
-const fromSnap = (s) => ({ news: new Map(s.news.map((e) => [e[0], e[3]])), best: new Map(s.best.map((e) => [e[0], e[3]])) });
+const fromSnap = (s) => ({ news: new Map(s.news.map((e) => [rowKey(e), e[3]])), best: new Map(s.best.map((e) => [rowKey(e), e[3]])) });
 const total = (st) => [...st.news.values(), ...st.best.values()].reduce((a, v) => a + v, 0);
 const put = (m, k, v, cap) => {
 const was = m.has(k);
@@ -1068,8 +1069,10 @@ if (!plays.length) playNote = "（プレイ履歴未能解析，只用成绩扫�
 playNote = "（プレイ履歴读取失败）";
 }
 const local = loadLocalHist();
-const recorded = new Map(local.obs.filter((o) => o.src === "p").map((o) => [playId(o), o]));
-const need = plays.filter((o) => o.pid && !(recorded.get(playId(o))?.r != null) && (o.nr || /^AP/.test(o.fc)));
+const lastQuery = [...local.snaps.map((s) => s.t), ...local.obs.filter((o) => o.src === "b").map((o) => o.t)].sort().pop() || "";
+const recorded = new Set(local.obs.filter((o) => o.src === "p").map(playId));
+const need = lastQuery ? plays.filter((o) => o.pid && o.nr && o.t >= lastQuery && !recorded.has(playId(o))) : [];
+if (need.length) log(`上次查询（${lastQuery}）之后有 ${need.length} 次刷新纪录的游玩，读取游玩详情 ...`);
 for (const [i, o] of need.entries()) {
 log(`正在读取游玩详情（${i + 1}/${need.length}）...`);
 try {
@@ -1078,10 +1081,6 @@ if (det.r) { o.r = det.r; if (det.dr != null) o.dr = det.dr; }
 if (det.id && chartByK.has(`id:${det.id}|${o.d}`)) o.k = `id:${det.id}|${o.d}`;
 } catch (e) {}
 await sleep(1000);
-}
-for (const o of plays) {
-const old = recorded.get(playId(o));
-if (old && old.r == null && o.r != null) Object.assign(old, { r: o.r, dr: o.dr });
 }
 hist = applyUpdate(local, plays);
 syncNote = (saveLocalHist(hist) ? "历史记录已保存在本机" : "本机存储空间不足，历史记录未保存") + playNote;
@@ -1249,8 +1248,18 @@ const last = snaps[snaps.length - 1], prev = snaps[snaps.length - 2];
 const rows = []; // {side:'L'|'R', e, color, right, sub}
 let upMore = 0;
 if (last && prev) {
-const toMap = (s) => new Map([...s.best, ...s.news].map((e) => [e[0], e]));
+const toMap = (s) => new Map([...s.best, ...s.news].map((e) => [rowKey(e), e]));
 const a = toMap(prev), b = toMap(last);
+const loose = (e) => `${norm(e[1])}|${e[5]}`;
+const onlyA = [...a.keys()].filter((k) => !b.has(k)), onlyB = [...b.keys()].filter((k) => !a.has(k));
+for (const kb of onlyB) {
+const same = onlyA.filter((ka) => loose(a.get(ka)) === loose(b.get(kb)));
+const sameB = onlyB.filter((x) => loose(b.get(x)) === loose(b.get(kb)));
+if (same.length === 1 && sameB.length === 1) {
+a.set(kb, a.get(same[0]));
+a.delete(same[0]);
+}
+}
 const ups = [];
 b.forEach((e, k) => {
 const o = a.get(k);
