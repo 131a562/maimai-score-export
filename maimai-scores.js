@@ -1307,11 +1307,17 @@ seg(String(r1), C.accent, 800);
 seg("Rating " + (r0 != null ? r0 + " →" : "→"), C.muted);
 return right - x;
 }
-async function drawTrend() {
-const { updates } = derive(hist);
-const impact = accountImpact(hist, updates);
+const inRange = (t, range) => (!range.from || t >= range.from) && (!range.to || t <= range.to);
+async function drawTrend(range) {
+const { updates: allUpdates } = derive(hist);
+const impact = accountImpact(hist, allUpdates);
+const updates = allUpdates.filter((u) => inRange(u.t, range));
 const snaps = hist.snaps;
-const last = snaps[snaps.length - 1], prev = snaps[snaps.length - 2];
+const beforeEnd = snaps.filter((s) => !range.to || s.t <= range.to);
+const last = beforeEnd[beforeEnd.length - 1];
+const startSnaps = snaps.filter((s) => range.from && s.t <= range.from);
+let prev = startSnaps[startSnaps.length - 1] || beforeEnd.find((s) => inRange(s.t, range));
+if (prev === last) prev = null;
 const rows = []; // {side:'L'|'R', e, color, right, sub}
 let upMore = 0;
 if (last && prev) {
@@ -1342,7 +1348,7 @@ upMore = Math.max(0, ups.length - 10);
 ups.slice(0, 10).forEach(({ e, dr, why }) => rows.push({ side: "L", e, color: dr > 0 ? C["SSS+"] : C.muted, right: dr > 0 ? `${e[3] - dr} → ${e[3]}（+${dr}）` : `${e[3]}（rating 不变）`, sub: why.join(" · ") }));
 a.forEach((e, k) => { if (!b.has(k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出 " + e[3] }); });
 }
-const recent = updates.slice(-20).reverse();
+const recent = updates.slice(-20).reverse(); // 时间段内最近的 20 次
 const ROW = 34, SUBROW = 20, PB_ROW = 58;
 const colRows = (side) => rows.filter((r) => r.side === side).reduce((a, r) => a + ROW + (r.sub ? SUBROW : 0), 0);
 const changeH = Math.max(colRows("L") + (upMore ? ROW : 0), colRows("R"), ROW);
@@ -1354,31 +1360,33 @@ ctx.fillText("maimai でらっくす  RATING HISTORY", HP, 42);
 ctx.fillStyle = C.fg;
 ctx.font = f(800, 42);
 ctx.fillText(fit(ctx, player.name || hist.name || "", 520), HP, 96);
-const line = [];
-for (const s of snaps) if (s.r) line.push([timeMs(s.t), s.r]);
+const all = [];
+for (const s of snaps) if (s.r) all.push([s.t, timeMs(s.t), s.r]);
 for (const o of hist.obs) {
 if (o.src !== "p" || !o.r) continue;
-if (o.dr != null) line.push([timeMs(o.t) - 1, o.r - o.dr]);
-line.push([timeMs(o.t), o.r]);
+if (o.dr != null) all.push([o.t, timeMs(o.t) - 1, o.r - o.dr]);
+all.push([o.t, timeMs(o.t), o.r]);
 }
-line.sort((a, b) => a[0] - b[0]);
+all.sort((a, b) => a[1] - b[1]);
+const line = all.filter((p) => inRange(p[0], range));
+const before = all.filter((p) => range.from && p[0] < range.from);
+const startPt = before[before.length - 1] || line[0];
 const days = new Map();
-for (const [ms, r] of line) {
+for (const [, ms, r] of line) {
 const d = new Date(ms);
 days.set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime(), r);
 }
 const daily = [...days.entries()];
 if (line.length) {
-const now = line[line.length - 1][1];
-const from = Date.now() - 30 * 864e5;
-const base30 = [...line].reverse().find((p) => p[0] <= from) || line[0];
-histStat(ctx, "DX RATING", String(now), HW - HP, C["SSS+"], true);
-histStat(ctx, "30 天", signedInt(now - base30[1]), HW - HP - 230, C.plat);
-histStat(ctx, "累计", signedInt(now - line[0][1]), HW - HP - 400, C.accent);
+const end = line[line.length - 1][2];
+histStat(ctx, "DX RATING", String(end), HW - HP, C["SSS+"], true);
+histStat(ctx, "这段时间", signedInt(end - startPt[2]), HW - HP - 230, C.plat);
+histStat(ctx, "推分", `${updates.length} 次`, HW - HP - 400, C.accent);
 }
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
-ctx.fillText(line.length ? `${daily.length} 天的记录（${new Date(line[0][0]).toLocaleDateString("ja-JP")} – ${new Date(line[line.length - 1][0]).toLocaleDateString("ja-JP")}）` : "", HP, 128);
+const fmtDay = (ms) => new Date(ms).toLocaleDateString("ja-JP");
+ctx.fillText(fit(ctx, `${range.label}${line.length ? `：${fmtDay(line[0][1])} – ${fmtDay(line[line.length - 1][1])}，${daily.length} 天有记录` : "：这段时间没有记录"}`, 640), HP, 128);
 let y = 150;
 lineChart(ctx, HP, y, HW - HP * 2, 360, [
 { label: "DX RATING（每天）", color: C["SSS+"], pts: daily, width: 4 },
@@ -1391,7 +1399,7 @@ ctx.fillText("目前只有 1 天的记录，以后每天运行一次就能连成
 ctx.textAlign = "left";
 }
 y += 380;
-histSection(ctx, "B50 变化" + (prev ? `（对比 ${prev.t}）` : ""), y, C.accent);
+histSection(ctx, "B50 变化" + (prev ? `（${prev.t} → ${last.t}）` : ""), y, C.accent);
 if (prev) {
 const dr = last.r - prev.r;
 ctx.textAlign = "right";
@@ -1424,7 +1432,7 @@ return ROW + (r.sub ? SUBROW : 0);
 ctx.font = f(700, 15);
 if (!prev) {
 ctx.fillStyle = C.muted;
-ctx.fillText("还没有上一次的快照可以对比", HP, y);
+ctx.fillText("这段时间里没有两个快照可以对比", HP, y);
 } else if (!rows.length) {
 ctx.fillStyle = C.muted;
 ctx.fillText("和上次相比没有变化", HP, y);
@@ -1441,7 +1449,7 @@ rows.filter((r) => r.side === "R").forEach((r) => { yy += rowText(HP + colW + 24
 }
 y += changeH;
 y += 6;
-histSection(ctx, "最近的推分", y, C["SSS+"]);
+histSection(ctx, `推分（${updates.length > 20 ? `共 ${updates.length} 次，显示最近 20 次` : `${updates.length} 次`}）`, y, C["SSS+"]);
 y += 64;
 if (!recent.length) {
 ctx.fillStyle = C.muted;
@@ -1478,16 +1486,19 @@ ctx.font = f(500, 13);
 ctx.fillText(fit(ctx, `${new Date().toLocaleString("ja-JP")}  ·  时间后的 * = 由成绩扫描发现（时间为运行书签的时间）  ·  单曲 rating 按现在的定数计算  ·  账号 Rating = 50 首单曲 rating 的合计`, HW - HP * 2), HP, H - 18);
 return toImage(cv);
 }
-async function drawSongCurve(e) {
+async function drawSongCurve(e, range) {
 const obs = hist.obs.filter((o) => canon(o) === e.k).sort(byTime);
-const plays = obs.filter((o) => o.src === "p");
+const plays = obs.filter((o) => o.src === "p" && inRange(o.t, range));
 const { state, updates } = derive(hist);
 const impact = accountImpact(hist, updates);
-const mine = updates.filter((u) => u.k === e.k).reverse().slice(0, 12);
+const mine = updates.filter((u) => u.k === e.k && inRange(u.t, range)).reverse().slice(0, 12);
 const cur = state[e.k];
-const pbPts = [];
+const pbAll = [];
 let best = -1;
-obs.forEach((o) => { if (o.a > best) { best = o.a; pbPts.push([timeMs(o.t), o.a / 10000]); } });
+obs.forEach((o) => { if (o.a > best) { best = o.a; pbAll.push([timeMs(o.t), o.a / 10000, o.t]); } });
+const pbStart = range.from ? [...pbAll].reverse().find((p) => p[2] < range.from) : null;
+const pbPts = [...(pbStart ? [[timeMs(range.from), pbStart[1]]] : []),
+...pbAll.filter((p) => inRange(p[2], range)).map((p) => [p[0], p[1]])];
 const chart = chartByK.get(e.k);
 const jacket = chart ? await loadJacket(chart.img) : null;
 const rows = plays.slice(-15).reverse();
@@ -1522,7 +1533,7 @@ ctx.fillStyle = C.muted;
 ctx.font = f(500, 14);
 ctx.textAlign = "right";
 ctx.fillText([best >= 0 ? rankOf(best / 10000) : "", rNow != null ? "单曲 Rating " + rNow : "",
-cur && cur.xm ? `DX ${cur.x.toLocaleString("en-US")} / ${cur.xm.toLocaleString("en-US")}` : "", `记录到 ${plays.length} 次游玩`].filter(Boolean).join("　·　"), HW - HP, 128);
+cur && cur.xm ? `DX ${cur.x.toLocaleString("en-US")} / ${cur.xm.toLocaleString("en-US")}` : "", `${range.label} ${plays.length} 次游玩`].filter(Boolean).join("　·　"), HW - HP, 128);
 ctx.textAlign = "left";
 let y = 170;
 const CHART_MIN = 94;
@@ -1551,7 +1562,7 @@ y += 64;
 if (!mine.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("还没有这首歌的推分记录", HP, y);
+ctx.fillText("这段时间没有这首歌的推分记录", HP, y);
 }
 mine.forEach((u) => {
 ctx.fillStyle = C.muted;
@@ -1575,7 +1586,7 @@ y += 64;
 if (!rows.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("还没有这首歌的プレイ履歴记录（只有成绩扫描的数据）", HP, y);
+ctx.fillText("这段时间没有这首歌的游玩记录", HP, y);
 }
 const pbAt = new Map();
 let run = -1;
@@ -1816,7 +1827,28 @@ if (kind) desc.push(kind);
 desc.push($("mc-played").selectedOptions[0].text);
 return desc;
 }
-let trendCache = null;
+const RANGE_KEY = "maimai-hist-range";
+let rangePref = { mode: "last" };
+try { rangePref = JSON.parse(localStorage.getItem(RANGE_KEY) || "null") || rangePref; } catch (e) {}
+if (!["last", "today", "7", "30", "all", "custom"].includes(rangePref.mode)) rangePref = { mode: "last" };
+const RANGE_MODES = [["last", "上次以来"], ["today", "今天"], ["7", "最近 7 天"], ["30", "最近 30 天"], ["all", "全部"]];
+const dayStr = (d) => `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return dayStr(d); };
+function currentRange() {
+const m = rangePref.mode;
+if (m === "last") {
+const prev = hist.snaps[hist.snaps.length - 2];
+return prev ? { from: prev.t, to: "", label: "上次查询以来" } : { from: "", to: "", label: "全部" };
+}
+if (m === "today") return { from: daysAgo(0) + " 00:00", to: "", label: "今天" };
+if (m === "7" || m === "30") return { from: daysAgo(+m - 1) + " 00:00", to: "", label: `最近 ${m} 天` };
+if (m === "custom") {
+const f = (rangePref.from || "").replace(/-/g, "/"), t = (rangePref.to || "").replace(/-/g, "/");
+return { from: f ? f + " 00:00" : "", to: t ? t + " 23:59" : "", label: `${f || "起点"} ~ ${t || "现在"}` };
+}
+return { from: "", to: "", label: "全部" };
+}
+const trendCache = new Map(); // 时间段 → 走势图
 async function renderHistory(seq) {
 view.innerHTML = "";
 const card = (css) => {
@@ -1834,19 +1866,49 @@ row.style.cssText = "margin-top:6px;display:flex;flex-wrap:wrap;gap:6px";
 if (SYNC_URL) {
 mkBtn("更改同步名字", async () => {
 await recordAndSync(true);
-trendCache = null;
+trendCache.clear();
 render();
 }, row);
 }
 mkBtn("从现在重新开始记录", async () => {
 if (!confirm("清空这个账号的全部历史记录" + (SYNC_URL ? "（本机和云端）" : "") + "，把现在全部谱面的成绩当作新的起点，从现在开始重新记录？\n清空后无法恢复。")) return;
 await recordAndSync(false, true);
-trendCache = null;
+trendCache.clear();
 render();
 }, row);
 info.appendChild(row);
+const range = currentRange();
+const rangeCard = card("display:flex;flex-wrap:wrap;align-items:center;gap:6px");
+rangeCard.innerHTML = "<b style=\"margin-right:4px\">时间段</b>";
+for (const [mode, label] of RANGE_MODES) {
+const b = mkBtn(label, () => {
+rangePref = { mode };
+try { localStorage.setItem(RANGE_KEY, JSON.stringify(rangePref)); } catch (e) {}
+render();
+}, rangeCard);
+b.style.padding = "6px 10px";
+b.style.fontSize = "14px";
+if (rangePref.mode === mode) Object.assign(b.style, { background: "#d1127a", color: "#fff" });
+}
+const dates = document.createElement("span");
+dates.style.cssText = "display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px";
+const toInput = (t) => (t ? t.slice(0, 10).replace(/\//g, "-") : "");
+dates.innerHTML = `<input id="mc-hfrom" type="date" style="font-size:15px;padding:3px"> ~ <input id="mc-hto" type="date" style="font-size:15px;padding:3px">`;
+rangeCard.appendChild(dates);
+const fromEl = dates.querySelector("#mc-hfrom"), toEl = dates.querySelector("#mc-hto");
+fromEl.value = rangePref.mode === "custom" ? rangePref.from || "" : toInput(range.from);
+toEl.value = rangePref.mode === "custom" ? rangePref.to || "" : toInput(range.to);
+if (hist.since) fromEl.min = toEl.min = toInput(hist.since);
+const onDate = () => {
+rangePref = { mode: "custom", from: fromEl.value, to: toEl.value };
+try { localStorage.setItem(RANGE_KEY, JSON.stringify(rangePref)); } catch (e) {}
+render();
+};
+fromEl.onchange = onDate;
+toEl.onchange = onDate;
 const songs = new Map();
 hist.obs.forEach((o) => {
+if (!inRange(o.t, range)) return;
 const k = canon(o);
 const ch = chartByK.get(k);
 const e = songs.get(k) || { k, n: ch?.title || o.n, d: o.d, kd: ch?.kind || o.kd, plays: 0, last: "" };
@@ -1867,7 +1929,7 @@ const items = [...songs.values()]
 .filter((e) => e.plays > 0 && (!q || norm(e.n).toLowerCase().includes(q)))
 .sort((a, b) => b.plays - a.plays || (a.last < b.last ? 1 : -1))
 .slice(0, 30);
-listEl.innerHTML = items.length ? "" : '<div style="color:#888">没有游玩记录（プレイ履歴里出现过的谱面才会列在这里）</div>';
+listEl.innerHTML = items.length ? "" : `<div style="color:#888">${esc(range.label)}：没有游玩记录（プレイ履歴里出现过的谱面才会列在这里）</div>`;
 for (const e of items) {
 const b = document.createElement("button");
 b.style.cssText = "display:flex;width:100%;align-items:center;gap:6px;text-align:left;margin:3px 0;padding:7px 8px;" +
@@ -1882,7 +1944,7 @@ curveBox.style.display = "";
 curveBox.textContent = "正在生成…";
 curveBox.scrollIntoView({ behavior: "smooth", block: "start" });
 try {
-showImage(await drawSongCurve(e), `maimai_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, null, curveBox);
+showImage(await drawSongCurve(e, range), `maimai_${e.n.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)}_${stamp}.png`, null, curveBox);
 } catch (err) {
 curveBox.textContent = "生成失败：" + err;
 }
@@ -1893,7 +1955,9 @@ listEl.appendChild(b);
 search.querySelector("#mc-hq").oninput = renderList;
 renderList();
 try {
-const img = trendCache = trendCache || (await drawTrend());
+const rk = JSON.stringify(range);
+if (!trendCache.has(rk)) trendCache.set(rk, await drawTrend(range));
+const img = trendCache.get(rk);
 if (seq === renderSeq) showImage(img, `maimai_history_${stamp}.png`, null, trendBox);
 } catch (err) {
 trendBox.textContent = "走势图生成失败：" + err;
