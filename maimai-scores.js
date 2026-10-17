@@ -1289,6 +1289,68 @@ ctx.fillText(s.label, lx + 24, y + h - 15);
 lx += 40 + ctx.measureText(s.label).width;
 });
 }
+function stepChart(ctx, x, y, w, h, steps) {
+rrect(ctx, x, y, w, h, 12);
+ctx.fillStyle = C.card;
+ctx.fill();
+if (steps.length < 2) {
+ctx.fillStyle = C.muted;
+ctx.font = f(500, 16);
+ctx.textAlign = "center";
+ctx.fillText(steps.length ? "这一天 DX Rating 没有增加" : "这一天没有记录", x + w / 2, y + h / 2);
+ctx.textAlign = "left";
+return;
+}
+let v0 = Math.min(...steps.map((s) => s.v)), v1 = Math.max(...steps.map((s) => s.v));
+const span = Math.max(v1 - v0, 10);
+v0 = (v0 + v1) / 2 - span * 0.6;
+v1 = v0 + span * 1.2;
+const L = x + 100, R = x + w - 40, T = y + 40, B = y + h - 70;
+const X = (i) => L + ((R - L) * i) / (steps.length - 1);
+const Y = (v) => B - ((v - v0) / (v1 - v0)) * (B - T);
+ctx.font = f(500, 14);
+ctx.textAlign = "right";
+for (let i = 0; i <= 4; i++) {
+const v = v0 + ((v1 - v0) * i) / 4;
+ctx.strokeStyle = "rgba(255,255,255,0.08)";
+ctx.lineWidth = 1;
+ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(R, Y(v)); ctx.stroke();
+ctx.fillStyle = C.muted;
+ctx.fillText(String(Math.round(v)), L - 10, Y(v) + 5);
+}
+ctx.strokeStyle = C["SSS+"];
+ctx.lineWidth = 4;
+ctx.beginPath();
+steps.forEach((s, i) => (i ? ctx.lineTo(X(i), Y(s.v)) : ctx.moveTo(X(i), Y(s.v))));
+ctx.stroke();
+const every = Math.max(1, Math.ceil(70 / ((R - L) / (steps.length - 1))));
+const colW = Math.min(150, ((R - L) / (steps.length - 1)) * every - 6);
+steps.forEach((s, i) => {
+ctx.fillStyle = C["SSS+"];
+ctx.beginPath(); ctx.arc(X(i), Y(s.v), 5, 0, Math.PI * 2); ctx.fill();
+ctx.textAlign = "center";
+if (s.top) {
+ctx.fillStyle = GOOD;
+ctx.font = f(800, 14);
+ctx.fillText(s.top, X(i), Y(s.v) - 12);
+}
+if (i % every && i !== steps.length - 1) { ctx.textAlign = "left"; return; }
+ctx.fillStyle = C.muted;
+ctx.font = f(600, 13);
+ctx.fillText(s.time, X(i), B + 22);
+if (s.song) {
+ctx.font = f(500, 12);
+ctx.fillText(fit(ctx, s.song, colW), X(i), B + 40);
+}
+ctx.textAlign = "left";
+});
+ctx.fillStyle = C.fg;
+ctx.font = f(500, 14);
+ctx.fillStyle = C["SSS+"];
+ctx.fillRect(L, y + h - 22, 18, 4);
+ctx.fillStyle = C.fg;
+ctx.fillText(`DX RATING（每次增加，共 ${steps.length - 1} 次）`, L + 24, y + h - 15);
+}
 function drawRatingChange(ctx, right, y, u, size = 14) {
 const r1 = ratingOfState(u.k, u.after);
 const r0 = u.before && u.before.a >= 0 ? ratingOfState(u.k, u.before) : null;
@@ -1365,7 +1427,7 @@ for (const s of snaps) if (s.r) all.push([s.t, timeMs(s.t), s.r]);
 for (const o of hist.obs) {
 if (o.src !== "p" || !o.r) continue;
 if (o.dr != null) all.push([o.t, timeMs(o.t) - 1, o.r - o.dr]);
-all.push([o.t, timeMs(o.t), o.r]);
+all.push([o.t, timeMs(o.t), o.r, o.n]);
 }
 all.sort((a, b) => a[1] - b[1]);
 const line = all.filter((p) => inRange(p[0], range));
@@ -1388,10 +1450,21 @@ ctx.font = f(500, 14);
 const fmtDay = (ms) => new Date(ms).toLocaleDateString("ja-JP");
 ctx.fillText(fit(ctx, `${range.label}${line.length ? `：${fmtDay(line[0][1])} – ${fmtDay(line[line.length - 1][1])}，${daily.length} 天有记录` : "：这段时间没有记录"}`, 640), HP, 128);
 let y = 150;
-lineChart(ctx, HP, y, HW - HP * 2, 360, [
+if (range.oneDay) {
+const steps = [];
+if (startPt) {
+let cur = startPt[2];
+steps.push({ v: cur, top: "", time: "开始", song: "" });
+for (const p of line) {
+if (p[2] > cur) steps.push({ v: p[2], top: "+" + (p[2] - cur), time: p[0].slice(11), song: p[3] || "" });
+cur = p[2];
+}
+}
+stepChart(ctx, HP, y, HW - HP * 2, 360, steps);
+} else lineChart(ctx, HP, y, HW - HP * 2, 360, [
 { label: "DX RATING（每天）", color: C["SSS+"], pts: daily, width: 4 },
 ], { minSpan: 20, fmt: (v) => String(Math.round(v)) });
-if (daily.length === 1) {
+if (!range.oneDay && daily.length === 1) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
@@ -1840,11 +1913,11 @@ if (m === "last") {
 const prev = hist.snaps[hist.snaps.length - 2];
 return prev ? { from: prev.t, to: "", label: "上次查询以来" } : { from: "", to: "", label: "全部" };
 }
-if (m === "today") return { from: daysAgo(0) + " 00:00", to: "", label: "今天" };
+if (m === "today") return { from: daysAgo(0) + " 00:00", to: "", label: "今天", oneDay: true };
 if (m === "7" || m === "30") return { from: daysAgo(+m - 1) + " 00:00", to: "", label: `最近 ${m} 天` };
 if (m === "custom") {
 const f = (rangePref.from || "").replace(/-/g, "/"), t = (rangePref.to || "").replace(/-/g, "/");
-return { from: f ? f + " 00:00" : "", to: t ? t + " 23:59" : "", label: `${f || "起点"} ~ ${t || "现在"}` };
+return { from: f ? f + " 00:00" : "", to: t ? t + " 23:59" : "", label: f && f === t ? f : `${f || "起点"} ~ ${t || "现在"}`, oneDay: !!f && f === t };
 }
 return { from: "", to: "", label: "全部" };
 }
