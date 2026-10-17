@@ -1297,7 +1297,7 @@ if (steps.length < 2) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
-ctx.fillText(steps.length ? "这一天 DX Rating 没有增加" : "这一天没有记录", x + w / 2, y + h / 2);
+ctx.fillText(steps.length ? "这段时间 DX Rating 没有增加" : "这段时间没有记录", x + w / 2, y + h / 2);
 ctx.textAlign = "left";
 return;
 }
@@ -1370,7 +1370,8 @@ seg("Rating " + (r0 != null ? r0 + " →" : "→"), C.muted);
 return right - x;
 }
 const inRange = (t, range) => (!range.from || t >= range.from) && (!range.to || t <= range.to);
-async function drawTrend(range) {
+const changedAccount = (u, im) => (u.r != null && u.dr != null ? u.dr > 0 : !!im && im.delta > 0);
+async function drawTrend(range, onlyRating) {
 const { updates: allUpdates } = derive(hist);
 const impact = accountImpact(hist, allUpdates);
 const updates = allUpdates.filter((u) => inRange(u.t, range));
@@ -1395,22 +1396,33 @@ a.set(kb, a.get(same[0]));
 a.delete(same[0]);
 }
 }
+const stateAt = (t) => derive({ ...hist, obs: hist.obs.filter((o) => o.t <= t) }).state;
+const st0 = stateAt(prev.t), st1 = stateAt(last.t);
+const diffText = (k, e0, e1) => {
+const s0 = st0[k], s1 = st1[k] || { a: e1[2], fc: e1[4], sy: "", x: 0, xm: 0 };
+const a0 = s0 && s0.a >= 0 ? s0.a : e0 ? e0[2] : -1;
+const parts = [a0 >= 0 && s1.a > a0 ? `${fmtAch(a0)} → ${fmtAch(s1.a)}` : fmtAch(s1.a)];
+const ch = (from, to) => (from ? `${from}→${to}` : to);
+if (s1.fc && s1.fc !== (s0?.fc || "")) parts.push(ch(s0?.fc, s1.fc));
+if (s1.sy && s1.sy !== "SYNC" && s1.sy !== (s0?.sy || "")) parts.push(ch(s0?.sy && s0.sy !== "SYNC" ? s0.sy : "", s1.sy));
+const x0 = s0 && s0.xm ? dxStarOf(s0.x, s0.xm) : 0, x1 = s1.xm ? dxStarOf(s1.x, s1.xm) : 0;
+if (x1 > x0) parts.push(`★${x0}→★${x1}`);
+return parts.join(" · ");
+};
 const ups = [];
 b.forEach((e, k) => {
 const o = a.get(k);
-if (!o) { rows.push({ side: "L", e, color: GOOD, right: "新进 " + e[3] }); return; }
-const why = [];
-if (e[2] > o[2]) why.push("+" + ((e[2] - o[2]) / 10000).toFixed(4) + "%");
-if (FC_RANK[e[4]] > FC_RANK[o[4]]) why.push(`${o[4] || "—"}→${e[4]}`);
+if (!o) { rows.push({ side: "L", e, color: GOOD, right: "新进 " + e[3], sub: diffText(k, null, e) }); return; }
 const dr = e[3] - o[3];
-if (why.length || dr > 0) ups.push({ e, dr, why });
+if (e[2] > o[2] || FC_RANK[e[4]] > FC_RANK[o[4]] || dr > 0) ups.push({ e, k, o, dr });
 });
 ups.sort((p, q) => q.dr - p.dr);
 upMore = Math.max(0, ups.length - 10);
-ups.slice(0, 10).forEach(({ e, dr, why }) => rows.push({ side: "L", e, color: dr > 0 ? C["SSS+"] : C.muted, right: dr > 0 ? `${e[3] - dr} → ${e[3]}（+${dr}）` : `${e[3]}（rating 不变）`, sub: why.join(" · ") }));
+ups.slice(0, 10).forEach(({ e, k, o, dr }) => rows.push({ side: "L", e, color: dr > 0 ? C["SSS+"] : C.muted, right: dr > 0 ? `${o[3]} → ${e[3]}（+${dr}）` : `${e[3]}（rating 不变）`, sub: diffText(k, o, e) }));
 a.forEach((e, k) => { if (!b.has(k)) rows.push({ side: "R", e, color: "#ff8a8a", right: "移出 " + e[3] }); });
 }
-const recent = updates.slice(-20).reverse(); // 时间段内最近的 20 次
+const listed = onlyRating ? updates.filter((u) => changedAccount(u, impact.get(u))) : updates;
+const recent = listed.slice(-20).reverse(); // 时间段内最近的 20 次
 const ROW = 34, SUBROW = 20, PB_ROW = 58;
 const colRows = (side) => rows.filter((r) => r.side === side).reduce((a, r) => a + ROW + (r.sub ? SUBROW : 0), 0);
 const changeH = Math.max(colRows("L") + (upMore ? ROW : 0), colRows("R"), ROW);
@@ -1450,7 +1462,8 @@ ctx.font = f(500, 14);
 const fmtDay = (ms) => new Date(ms).toLocaleDateString("ja-JP");
 ctx.fillText(fit(ctx, `${range.label}${line.length ? `：${fmtDay(line[0][1])} – ${fmtDay(line[line.length - 1][1])}，${daily.length} 天有记录` : "：这段时间没有记录"}`, 640), HP, 128);
 let y = 150;
-if (range.oneDay) {
+const oneDay = range.oneDay || daily.length <= 1;
+if (oneDay) {
 const steps = [];
 if (startPt) {
 let cur = startPt[2];
@@ -1464,7 +1477,7 @@ stepChart(ctx, HP, y, HW - HP * 2, 360, steps);
 } else lineChart(ctx, HP, y, HW - HP * 2, 360, [
 { label: "DX RATING（每天）", color: C["SSS+"], pts: daily, width: 4 },
 ], { minSpan: 20, fmt: (v) => String(Math.round(v)) });
-if (!range.oneDay && daily.length === 1) {
+if (!oneDay && daily.length === 1) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 16);
 ctx.textAlign = "center";
@@ -1497,7 +1510,7 @@ ctx.fillText(r.right, x + colW - 6, yy);
 if (r.sub) {
 ctx.fillStyle = C.muted;
 ctx.font = f(500, 13);
-ctx.fillText(r.sub, x + colW - 6, yy + SUBROW);
+ctx.fillText(fit(ctx, r.sub, colW - 12), x + colW - 6, yy + SUBROW);
 }
 ctx.textAlign = "left";
 return ROW + (r.sub ? SUBROW : 0);
@@ -1522,12 +1535,12 @@ rows.filter((r) => r.side === "R").forEach((r) => { yy += rowText(HP + colW + 24
 }
 y += changeH;
 y += 6;
-histSection(ctx, `推分（${updates.length > 20 ? `共 ${updates.length} 次，显示最近 20 次` : `${updates.length} 次`}）`, y, C["SSS+"]);
+histSection(ctx, `${onlyRating ? "让账号 Rating 变化的推分" : "推分"}（${listed.length > 20 ? `共 ${listed.length} 次，显示最近 20 次` : `${listed.length} 次`}）`, y, C["SSS+"]);
 y += 64;
 if (!recent.length) {
 ctx.fillStyle = C.muted;
 ctx.font = f(700, 15);
-ctx.fillText("暂无记录。达成率、FC/AP、FS/FDX、DX 分星级有提升时会记在这里", HP, y);
+ctx.fillText(onlyRating ? "这段时间没有让账号 Rating 变化的推分" : "暂无记录。达成率、FC/AP、FS/FDX、DX 分星级有提升时会记在这里", HP, y);
 }
 recent.forEach((u) => {
 ctx.fillStyle = C.muted;
@@ -1921,7 +1934,10 @@ return { from: f ? f + " 00:00" : "", to: t ? t + " 23:59" : "", label: f && f =
 }
 return { from: "", to: "", label: "全部" };
 }
-const trendCache = new Map(); // 时间段 → 走势图
+const trendCache = new Map(); // 时间段 + 推分筛选 → 走势图
+const PUSH_KEY = "maimai-hist-push";
+let pushFilter = "all";
+try { pushFilter = localStorage.getItem(PUSH_KEY) === "rating" ? "rating" : "all"; } catch (e) {}
 async function renderHistory(seq) {
 view.innerHTML = "";
 const card = (css) => {
@@ -1978,6 +1994,20 @@ try { localStorage.setItem(RANGE_KEY, JSON.stringify(rangePref)); } catch (e) {}
 render();
 };
 fromEl.onchange = onDate;
+const pushRow = document.createElement("div");
+pushRow.style.cssText = "flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px";
+pushRow.innerHTML = "<b style=\"margin-right:4px\">推分</b>";
+for (const [v, label] of [["all", "全部推分"], ["rating", "只看账号 Rating 有变化的"]]) {
+const b = mkBtn(label, () => {
+pushFilter = v;
+try { localStorage.setItem(PUSH_KEY, v); } catch (e) {}
+render();
+}, pushRow);
+b.style.padding = "6px 10px";
+b.style.fontSize = "14px";
+if (pushFilter === v) Object.assign(b.style, { background: "#d1127a", color: "#fff" });
+}
+rangeCard.appendChild(pushRow);
 toEl.onchange = onDate;
 const songs = new Map();
 hist.obs.forEach((o) => {
@@ -2028,8 +2058,8 @@ listEl.appendChild(b);
 search.querySelector("#mc-hq").oninput = renderList;
 renderList();
 try {
-const rk = JSON.stringify(range);
-if (!trendCache.has(rk)) trendCache.set(rk, await drawTrend(range));
+const rk = JSON.stringify(range) + pushFilter;
+if (!trendCache.has(rk)) trendCache.set(rk, await drawTrend(range, pushFilter === "rating"));
 const img = trendCache.get(rk);
 if (seq === renderSeq) showImage(img, `maimai_history_${stamp}.png`, null, trendBox);
 } catch (err) {
