@@ -5,7 +5,10 @@ alert("请在登录后的 maimai DX NET（maimaidx.jp）页面上执行。");
 return;
 }
 const NET = location.origin + "/maimai-mobile";
-const CONST_URL = "https://otoge-db.net/maimai/data/music-ex.json";
+const CONST_URLS = [
+"https://131a562.github.io/sbga-tool/data/feed/maimai-music-ex.json",
+"https://otoge-db.net/maimai/data/music-ex.json",
+];
 const JACKET_URL = "https://otoge-db.net/maimai/jacket/";
 const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl（历史记录云端同步）
 const SYNC_URL = TEST ? TEST.syncUrl || "" : /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
@@ -186,13 +189,20 @@ const chartKeys = (s) => [s.idx && `id:${s.idx}|${s.difficulty}`, `${keyOf(s)}|$
 const songSet = (list) => ({ ids: new Set(list.map((s) => s.idx).filter(Boolean)), names: new Set(list.map(keyOf)) });
 const inSet = (set, s) => (s.idx && set.ids.size ? set.ids.has(s.idx) : set.names.has(keyOf(s)));
 const idStats = { b50WithId: 0, joinedById: 0, joinedByName: 0, notJoined: 0 }; // 调试用
-log("正在读取谱面定数表（otoge-db）...");
+log("正在读取谱面定数表 ...");
 let constData = [];
+for (const [i, url] of CONST_URLS.entries()) {
 try {
-constData = await (await fetch(CONST_URL)).json();
-log(`✓ 定数表：${constData.length} 首`);
+const r = await fetch(url);
+if (!r.ok) throw new Error("HTTP " + r.status);
+const j = await r.json();
+if (!Array.isArray(j) || j.length < 100) throw new Error("内容不对");
+constData = j;
+log(`✓ 定数表：${constData.length} 首${i ? "（SBGA TOOL 读不到，用的是 otoge-db）" : ""}`);
+break;
 } catch (e) {
-log(`× 定数表读取失败（${e}），将按等级估算定数，且不显示曲绘。`);
+if (i === CONST_URLS.length - 1) log(`× 定数表读取失败（${e}），将按等级估算定数，且不显示曲绘。`);
+}
 }
 const titleIndex = new Map(); // 曲名 → [{ m, pre, kind }]
 const jacketIndex = new Map(); // 曲绘文件名 → [{ m, pre, kind }]
