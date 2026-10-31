@@ -12,6 +12,8 @@ const CONST_URLS = [
 const JACKET_URL = "https://otoge-db.net/maimai/jacket/";
 const SYNC_URL_RAW = "https://otoge-sync.131a562-index01.workers.dev"; // build.js 替换为 config.json 的 syncUrl（历史记录云端同步）
 const SYNC_URL = TEST ? TEST.syncUrl || "" : /^https?:\/\//.test(SYNC_URL_RAW) ? SYNC_URL_RAW : "";
+const DASH_SRC = (TEST && TEST.dashSrc) || "https://131a562.github.io/sbga-dashboard/src/";
+const sharedLoading = Promise.all(["draw-maimai.js", "sync.js"].map((f) => import(`${DASH_SRC}${f}?t=${Date.now()}`))).catch((e) => e);
 const ALL_DIFFS = [
 { id: 0, cls: "basic", name: "BASIC", short: "BAS", key: "bas" },
 { id: 1, cls: "advanced", name: "ADVANCED", short: "ADV", key: "adv" },
@@ -78,12 +80,6 @@ const base = Math.floor((Math.round(c * 10) * Math.round(a * 10000) * f) / 1e8);
 return base + (s.fc === "AP" || s.fc === "AP+" ? 1 : 0);
 }
 const dxStarOf = (p, max) => (max > 0 ? [0.85, 0.9, 0.93, 0.95, 0.97].filter((t) => p >= max * t).length : 0);
-const constParts = (s) => {
-if (s.const == null) return null;
-const i = Math.floor(s.const + 1e-9);
-const plus = s.level ? s.level.endsWith("+") : s.const - i >= 0.6 - 1e-9;
-return { int: String(i), plus, dec: s.const_unknown ? ".?" : "." + Math.round((s.const - i) * 10) };
-};
 const constText = (s) => {
 const p = constParts(s);
 return p ? p.int + (p.plus ? "+" : "") + p.dec : "";
@@ -434,18 +430,14 @@ if (b50Source === "rating 对象曲页面" && b50.length && b50.every((s) => !s.
 log("对象曲页面上没有 FC/AP、DX 分，读取成绩列表补上 ...");
 if (!(await loadAllCharts())) log("× 没有读到成绩列表，B50 图不显示 FC/AP、DX 分");
 }
-const IMG = { W: 1800, PAD: 28, COLS: 5, GAP: 10, CH: 124, HEAD: 168, SEC: 44, FOOT: 40, PER_IMAGE: 150 };
-IMG.CW = Math.floor((IMG.W - IMG.PAD * 2 - IMG.GAP * (IMG.COLS - 1)) / IMG.COLS);
-const FONT = `"Hiragino Sans","Hiragino Kaku Gothic ProN","PingFang SC","Noto Sans CJK JP","Microsoft YaHei",sans-serif`;
-const C = {
-bg: "#16151c", card: "#24222d", line: "#3a3745", fg: "#f3f1f8", muted: "#9d99ab", accent: "#ff5aa8", plat: "#7fe0ff",
-BASIC: "#3fbf6f", ADVANCED: "#f2a33a", EXPERT: "#e5484d", MASTER: "#9a5cf0", "Re:MASTER": "#e3c8ff",
-"SSS+": "#ffd36b", SSS: "#ffc94a", "SS+": "#f0b43c", SS: "#f0b43c", "S+": "#e3a53a", S: "#e3a53a",
-"AP+": "#ffd36b", AP: "#ffc94a", "FC+": "#7fe0ff", FC: "#4fc3f7",
-"FDX+": "#ff9a5a", FDX: "#ffb347", "FS+": "#7ee08a", FS: "#5ccf6c", SYNC: "#9d99ab",
-DX: "#ff9a3c", STD: "#4aa3ff", star: ["#3a3745", "#5ccf6c", "#5ccf6c", "#ffb347", "#ffb347", "#ffd36b"],
-};
-const f = (w, px) => `${w} ${px}px ${FONT}`;
+const shared = await sharedLoading;
+if (shared instanceof Error) {
+log(`× 读不到 SBGA DASHBOARD 的 draw-maimai.js / sync.js：${shared.message}`);
+return;
+}
+const [draw, syncLib] = shared;
+const { C, f, rrect, fit, constParts, pill, constPill, drawStars } = draw;
+const PER_IMAGE = 150; // 查分图每张最多几首，多了拆成几张
 const jacketCache = new Map();
 const jacketFails = new Set(); // 调试用：两个地址都没加载成功的曲绘
 const loadImg = (src, cors) => new Promise((resolve) => {
@@ -465,144 +457,7 @@ jacketCache.set(id, loadImg(JACKET_URL + id, true)
 }
 return jacketCache.get(id);
 }
-function rrect(ctx, x, y, w, h, r) {
-ctx.beginPath();
-ctx.moveTo(x + r, y);
-ctx.arcTo(x + w, y, x + w, y + h, r);
-ctx.arcTo(x + w, y + h, x, y + h, r);
-ctx.arcTo(x, y + h, x, y, r);
-ctx.arcTo(x, y, x + w, y, r);
-ctx.closePath();
-}
-function fit(ctx, text, maxW) {
-if (ctx.measureText(text).width <= maxW) return text;
-let t = text;
-while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
-return t + "…";
-}
-function pill(ctx, text, x, y, color, px = 12, ink = "#16151c") {
-ctx.font = f(800, px);
-const w = ctx.measureText(text).width + px;
-rrect(ctx, x, y - px - 2, w, px + 7, 4);
-ctx.fillStyle = color;
-ctx.fill();
-ctx.fillStyle = ink;
-ctx.fillText(text, x + px / 2, y + 1);
-return w;
-}
-function constPill(ctx, s, x, y, px = 13) {
-const p = constParts(s);
-const parts = p
-? [[`${s.diffShort} ${p.int}`, px, 0], [p.plus ? "+" : "", px - 2, -px * 0.42], [p.dec, px, 0]]
-: [[`${s.diffShort} ?`, px, 0]];
-let w = px;
-for (const [t, size] of parts) {
-ctx.font = f(800, size);
-w += ctx.measureText(t).width;
-}
-rrect(ctx, x, y - px - 3, w, px + 9, 4);
-ctx.fillStyle = C[s.difficulty] || C.muted;
-ctx.fill();
-ctx.fillStyle = s.difficulty === "Re:MASTER" ? "#3b1d5e" : "#16151c";
-let cx = x + px / 2;
-for (const [t, size, dy] of parts) {
-ctx.font = f(800, size);
-ctx.fillText(t, cx, y + 1 + dy);
-cx += ctx.measureText(t).width;
-}
-return w;
-}
-function drawStars(ctx, n, right, baseline, size = 12, gap = 2) {
-const total = 5 * size + 4 * gap;
-for (let i = 0; i < 5; i++) {
-const cx = right - total + i * (size + gap) + size / 2, cy = baseline - size / 2;
-ctx.beginPath();
-for (let k = 0; k < 8; k++) {
-const r = k % 2 ? size * 0.2 : size / 2;
-const a = -Math.PI / 2 + (k * Math.PI) / 4;
-ctx[k ? "lineTo" : "moveTo"](cx + r * Math.cos(a), cy + r * Math.sin(a));
-}
-ctx.closePath();
-ctx.fillStyle = i < n ? C.star[n] : C.line;
-ctx.fill();
-}
-return total;
-}
-function drawCard(ctx, s, label, x, y, jacket) {
-const { CW, CH } = IMG;
-rrect(ctx, x, y, CW, CH, 10);
-ctx.fillStyle = C.card;
-ctx.fill();
-ctx.save();
-rrect(ctx, x, y, CW, CH, 10);
-ctx.clip();
-if (jacket) ctx.drawImage(jacket, x, y, CH, CH);
-else {
-ctx.fillStyle = C.line;
-ctx.fillRect(x, y, CH, CH);
-ctx.fillStyle = C.muted;
-ctx.font = f(700, 14);
-ctx.textAlign = "center";
-ctx.fillText("NO IMAGE", x + CH / 2, y + CH / 2 + 5);
-ctx.textAlign = "left";
-}
-ctx.fillStyle = C[s.difficulty] || C.muted;
-ctx.fillRect(x, y + CH - 6, CH, 6);
-ctx.restore();
-ctx.font = f(800, 13);
-const lw = ctx.measureText(label).width + 12;
-rrect(ctx, x + 4, y + 4, lw, 20, 5);
-ctx.fillStyle = "rgba(0,0,0,.72)";
-ctx.fill();
-ctx.fillStyle = "#fff";
-ctx.fillText(label, x + 10, y + 19);
-pill(ctx, s.kind, x + 6, y + CH - 12, C[s.kind], 11, "#fff");
-const L = x + CH + 10, R = x + CW - 10, TW = R - L;
-ctx.textAlign = "left";
-const text = (t, tx, ty, font, color, maxW) => {
-ctx.font = font;
-ctx.fillStyle = color;
-const s2 = maxW != null ? fit(ctx, t, Math.max(0, maxW)) : t;
-if (maxW == null || maxW > 12) ctx.fillText(s2, tx, ty);
-return ctx.measureText(s2).width;
-};
-const textR = (t, ty, font, color, maxW) => { // 右对齐，返回宽度
-ctx.font = font;
-const s2 = fit(ctx, t, maxW);
-const w = ctx.measureText(s2).width;
-if (maxW > 12) {
-ctx.fillStyle = color;
-ctx.fillText(s2, R - w, ty);
-}
-return w;
-};
-let cx = L + constPill(ctx, s, L, y + 20) + 8;
-if (s.version) textR(s.version, y + 20, f(600, 12), C.muted, R - cx);
-text(s.title, L, y + 45, f(700, 16), C.fg, TW);
-if (s.played) {
-cx = L + text(`${s.achievement.toFixed(4)}%`, L, y + 71, f(800, 18), C.fg);
-text(s.rank, cx + 5, y + 71, f(800, 14), C[s.rank] || C.muted, R - cx - 5);
-} else {
-text("未游玩", L, y + 71, f(700, 15), C.muted);
-}
-const starW = s.dx_max ? drawStars(ctx, s.dx_star, R, y + 93) : 0;
-cx = L;
-for (const t of [s.fc, s.sync === "SYNC" ? "" : s.sync]) {
-if (!t) continue;
-ctx.font = f(800, 11);
-if (cx + ctx.measureText(t).width + 11 > R - starW - 6) break;
-cx += pill(ctx, t, cx, y + 93, C[t] || C.muted, 11) + 4;
-}
-const ratingW = textR(s.rating > 0 ? String(s.rating) : "—", y + 117, f(800, 22), s.rating > 0 ? C.accent : C.muted, TW);
-if (s.dx_max) {
-cx = L + text("DX ", L, y + 116, f(700, 11), C.muted);
-text(`${s.played ? s.dx_score.toLocaleString("en-US") : "—"} / ${s.dx_max.toLocaleString("en-US")}`, cx, y + 116, f(700, 13), C.plat, R - cx - ratingW - 8);
-}
-}
 async function drawImage(title, subtitle, stats, sections) {
-const { W, PAD, COLS, GAP, CH, HEAD, SEC, FOOT, CW } = IMG;
-const rowsOf = (n) => Math.max(1, Math.ceil(n / COLS));
-const H = HEAD + sections.reduce((h, sec) => h + SEC + rowsOf(sec.rows.length) * (CH + GAP), 0) + FOOT;
 const jackets = new Map();
 const queue = sections.flatMap((sec) => sec.rows);
 await Promise.all(Array.from({ length: 6 }, async () => {
@@ -611,67 +466,11 @@ const s = queue.shift();
 jackets.set(s, await loadJacket(s.img));
 }
 }));
-const cv = document.createElement("canvas");
-cv.width = W;
-cv.height = H;
-const ctx = cv.getContext("2d");
-ctx.fillStyle = C.bg;
-ctx.fillRect(0, 0, W, H);
-ctx.textBaseline = "alphabetic";
-ctx.fillStyle = C.accent;
-ctx.font = f(800, 16);
-ctx.fillText(fit(ctx, `maimai でらっくす ${versionName(latestVersion)}${player.name ? "  ·  " + player.name : ""}`, 700), PAD, 42);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 52);
-ctx.fillText(fit(ctx, title, 760), PAD, 100);
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText(fit(ctx, subtitle, 760), PAD, 132);
-const boxW = 220, boxGap = 10;
-stats.forEach(([label, value, note], i) => {
-const bx = W - PAD - (stats.length - i) * (boxW + boxGap) + boxGap;
-rrect(ctx, bx, 26, boxW, 112, 10);
-ctx.fillStyle = C.card;
-ctx.fill();
-ctx.fillStyle = C.muted;
-ctx.font = f(700, 14);
-ctx.fillText(label, bx + 14, 52);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 30);
-ctx.fillText(fit(ctx, value, boxW - 28), bx + 14, 92);
-ctx.fillStyle = C.muted;
-ctx.font = f(500, 13);
-ctx.fillText(fit(ctx, note, boxW - 28), bx + 14, 122);
+const cv = draw.drawImage({
+head: `maimai でらっくす ${versionName(latestVersion)}${player.name ? "  ·  " + player.name : ""}`,
+title, subtitle, stats, sections, jackets,
+footer: `${new Date().toLocaleString("ja-JP")}  ·  成绩：maimai DX NET  ·  定数・曲绘：otoge-db（定数为 ".?" 的还未公开）  ·  AP/AP+ 单曲 rating +1`,
 });
-let y = HEAD;
-for (const sec of sections) {
-ctx.fillStyle = C.line;
-ctx.fillRect(PAD, y + 6, W - PAD * 2, 1);
-ctx.fillStyle = C.fg;
-ctx.font = f(800, 20);
-ctx.fillText(sec.name, PAD, y + 34);
-if (sec.note) {
-const nw = ctx.measureText(sec.name).width;
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText(sec.note, PAD + nw + 14, y + 34);
-}
-y += SEC;
-if (!sec.rows.length) {
-ctx.font = f(500, 15);
-ctx.fillStyle = C.muted;
-ctx.fillText("没有符合条件的谱面", PAD, y + 40);
-}
-sec.rows.forEach((s, i) => {
-drawCard(ctx, s, sec.label(s, i), PAD + (i % COLS) * (CW + GAP), y + Math.floor(i / COLS) * (CH + GAP), jackets.get(s));
-});
-y += rowsOf(sec.rows.length) * (CH + GAP);
-}
-ctx.font = f(500, 13);
-ctx.fillStyle = C.muted;
-ctx.fillText(fit(ctx,
-`${new Date().toLocaleString("ja-JP")}  ·  成绩：maimai DX NET  ·  定数・曲绘：otoge-db（定数为 ".?" 的还未公开）  ·  AP/AP+ 单曲 rating +1`,
-W - PAD * 2), PAD, H - 16);
 try {
 const blob = await new Promise((resolve, reject) => {
 try {
@@ -683,7 +482,7 @@ reject(e);
 cv.width = cv.height = 0; // 立即释放 canvas 内存（iOS 有总量上限）
 return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
-if (jackets.size) {
+if ([...jackets.values()].some(Boolean)) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
 return drawImage(title, subtitle, stats, sections);
 }
@@ -1028,62 +827,8 @@ const saveLocalHist = (h) => {
 try { localStorage.setItem(histKey(), JSON.stringify(h)); return true; } catch (e) { return false; }
 };
 const SYNC_GAME = "maimai";
-const cleanAccount = (s) => s.normalize("NFKC").replace(/[a-z]/g, (c) => c.toUpperCase()).trim()
-.replace(/[\\/:*?"<>|#%\u0000-\u001f]+/g, "_").replace(/\s+/g, " ").replace(/^\.+/, "").slice(0, 40);
-const b64enc = (str) => {
-const bytes = new TextEncoder().encode(str);
-let bin = "";
-for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-return btoa(bin);
-};
-const b64dec = (b64) => {
-const bin = atob(b64.replace(/\s/g, ""));
-const bytes = new Uint8Array(bin.length);
-for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-return new TextDecoder().decode(bytes);
-};
-const syncFetch = async (acc, suffix, init) => {
-let res;
-try {
-res = await fetch(SYNC_URL.replace(/\/+$/, "") + "/" + SYNC_GAME + "/" + encodeURIComponent(acc) + (suffix || ""),
-Object.assign({ cache: "no-store" }, init));
-} catch (e) {
-throw new Error("连不上同步服务");
-}
-if (res.status === 401 || res.status === 403 || res.status >= 500) throw new Error("同步服务出错（HTTP " + res.status + "）");
-return res;
-};
-const syncGet = async (acc) => {
-const res = await syncFetch(acc);
-if (res.status === 404) return { data: null, sha: null };
-if (!res.ok) throw new Error("读取失败 HTTP " + res.status);
-const j = await res.json();
-let text;
-if (j.encoding === "base64" && j.content) text = b64dec(j.content);
-else {
-const raw = await syncFetch(acc, "/raw");
-if (!raw.ok) throw new Error("读取失败 HTTP " + raw.status);
-text = await raw.text();
-}
-try { return { data: JSON.parse(text), sha: j.sha }; } catch (e) { throw new Error("云端数据损坏"); }
-};
-const syncPut = async (acc, data, sha) => {
-const body = { message: "update " + SYNC_GAME + "/" + acc + " " + nowStr(), content: b64enc(JSON.stringify(data)) };
-if (sha) body.sha = sha;
-const res = await syncFetch(acc, "", { method: "PUT", body: JSON.stringify(body), headers: { "Content-Type": "application/json" } });
-if (res.status === 409 || res.status === 422) return false;
-if (!res.ok) throw new Error("写入失败 HTTP " + res.status);
-return true;
-};
-const syncMerge = async (acc, local) => {
-for (let attempt = 0; attempt < 3; attempt++) {
-const { data, sha } = await syncGet(acc);
-const merged = data && data.obs && data.v === HIST_V ? mergeHist(data, local) : local;
-if (data && JSON.stringify(data) === JSON.stringify(merged)) return merged;
-if (await syncPut(acc, merged, sha)) return merged;
-}
-throw new Error("多次写入冲突，请稍后再试");
-};
+const { cleanAccount } = syncLib;
+const { fetch: syncFetch, get: syncGet, merge: syncMerge } = syncLib.createSync(SYNC_URL, SYNC_GAME, (data, local) => (data.obs && data.v === HIST_V ? mergeHist(data, local) : local));
 const ACC_KEY = "maimai-accounts"; // 这台设备上「maimai 玩家名 → 同步用的名字」
 const loadAccounts = () => { try { return JSON.parse(localStorage.getItem(ACC_KEY) || "{}"); } catch (e) { return {}; } };
 const saveAccounts = (a) => { try { localStorage.setItem(ACC_KEY, JSON.stringify(a)); } catch (e) {} };
@@ -2122,9 +1867,9 @@ view.innerHTML =
 table(shownRows, innerWidth >= 768 ? songKeys : compactKeys);
 return;
 }
-const pages = Math.max(1, Math.ceil(shownRows.length / IMG.PER_IMAGE));
+const pages = Math.max(1, Math.ceil(shownRows.length / PER_IMAGE));
 page = Math.min(page, pages - 1);
-const rows = shownRows.slice(page * IMG.PER_IMAGE, (page + 1) * IMG.PER_IMAGE);
+const rows = shownRows.slice(page * PER_IMAGE, (page + 1) * PER_IMAGE);
 view.innerHTML = '<div style="padding:24px 0;color:#555">正在生成图片（加载曲绘中）…</div>';
 const cnt = (k, re) => playedRows.filter((s) => re.test(s[k])).length;
 const img = await drawImage(
@@ -2136,7 +1881,7 @@ const img = await drawImage(
 ["AP / FC", `${cnt("fc", /^AP/)} / ${cnt("fc", /^FC/)}`, `AP+ ${cnt("fc", /^AP\+$/)} · FC+ ${cnt("fc", /^FC\+$/)} · FDX ${cnt("sync", /^FDX/)}`],
 ["DX 分 ★5", `${playedRows.filter((s) => s.dx_star >= 5).length}`, `★4 ${playedRows.filter((s) => s.dx_star === 4).length} · ★3 ${playedRows.filter((s) => s.dx_star === 3).length}`],
 ],
-[{ name: "查分结果", note: pages > 1 ? `第 ${page + 1}/${pages} 张（${page * IMG.PER_IMAGE + 1}〜${page * IMG.PER_IMAGE + rows.length}）` : "", rows, label: (s, i) => `${page * IMG.PER_IMAGE + i + 1}` }]
+[{ name: "查分结果", note: pages > 1 ? `第 ${page + 1}/${pages} 张（${page * PER_IMAGE + 1}〜${page * PER_IMAGE + rows.length}）` : "", rows, label: (s, i) => `${page * PER_IMAGE + i + 1}` }]
 );
 if (seq !== renderSeq) return; // 期间又切换了标签/筛选条件时，丢弃旧结果
 let pager = null;
