@@ -457,7 +457,7 @@ jacketCache.set(id, loadImg(JACKET_URL + id, true)
 }
 return jacketCache.get(id);
 }
-async function drawImage(title, subtitle, stats, sections) {
+async function drawImage(title, subtitle, stats, sections, profile) {
 const jackets = new Map();
 const queue = sections.flatMap((sec) => sec.rows);
 await Promise.all(Array.from({ length: 6 }, async () => {
@@ -468,7 +468,7 @@ jackets.set(s, await loadJacket(s.img));
 }));
 const cv = draw.drawImage({
 head: `maimai でらっくす ${versionName(latestVersion)}${player.name ? "  ·  " + player.name : ""}`,
-title, subtitle, stats, sections, jackets,
+title, subtitle, stats, sections, jackets, profile,
 footer: `${new Date().toLocaleString("ja-JP")}  ·  成绩：maimai DX NET  ·  定数・曲绘：otoge-db（定数为 ".?" 的还未公开）  ·  AP/AP+ 单曲 rating +1`,
 });
 try {
@@ -484,7 +484,7 @@ return { blob, url: URL.createObjectURL(blob) };
 } catch (e) {
 if ([...jackets.values()].some(Boolean)) {
 for (const k of jacketCache.keys()) jacketCache.set(k, Promise.resolve(null));
-return drawImage(title, subtitle, stats, sections);
+return drawImage(title, subtitle, stats, sections, profile);
 }
 throw e;
 }
@@ -497,19 +497,26 @@ return r.length ? `最高 ${Math.max(...r)} · 最低 ${Math.min(...r)}` : "—"
 const b50Image = () => {
 const calc = ratingInfo.total;
 const diff = player.rating ? calc - player.rating : 0;
+const subtitle = player.rating
+? `游戏内 Rating（maimai DX NET）· 按定数计算 ${calc}${diff === 0 ? "（一致）" : `（差 ${diff > 0 ? "+" : ""}${diff}）`}`
+: `BEST35 ${ratingInfo.old35} + NEW15 ${ratingInfo.new15}（按定数计算）`;
 return drawImage(
 `DX Rating ${player.rating || calc}`,
-player.rating
-? `游戏内 Rating（maimai DX NET）· 按定数计算 ${calc}${diff === 0 ? "（一致）" : `（差 ${diff > 0 ? "+" : ""}${diff}）`}`
-: `BEST35 ${ratingInfo.old35} + NEW15 ${ratingInfo.new15}（按定数计算）`,
+subtitle,
 [
 ["BEST35", `${ratingInfo.old35}`, `${old35.length}曲 · ${maxMin(old35)}`],
 ["NEW15", `${ratingInfo.new15}`, `${new15.length}曲 · ${maxMin(new15)}`],
 ],
 [
-{ name: "BEST35", note: `合计 ${ratingInfo.old35}`, rows: old35, label: (s) => s.frame },
-{ name: "NEW15", note: `${newVersions().map(versionName).join(" / ")} · 合计 ${ratingInfo.new15}`, rows: new15, label: (s) => s.frame },
-]
+{ name: "BEST35", note: `${old35.length}曲 · 合计 ${ratingInfo.old35} · ${maxMin(old35)}`, rows: old35, label: (s) => s.frame },
+{ name: "NEW15", note: `${newVersions().map(versionName).join(" / ")} · ${new15.length}曲 · 合计 ${ratingInfo.new15} · ${maxMin(new15)}`, rows: new15, label: (s) => s.frame },
+],
+{
+kicker: `maimai でらっくす ${versionName(latestVersion)}  ·  DX RATING  BEST 50`,
+name: player.name || "", rating: `${player.rating || calc}`, ratingLabel: "DX RATING",
+stats: [["BEST35", `${ratingInfo.old35}`], ["NEW15", `${ratingInfo.new15}`, C.plat]],
+note: subtitle,
+}
 );
 };
 if (!charts) {
