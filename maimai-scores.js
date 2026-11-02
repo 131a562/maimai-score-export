@@ -769,46 +769,78 @@ return hist;
 function accountImpact(hist, updates) {
 const snaps = hist.snaps;
 const out = new Map();
-const fromSnap = (s) => ({ news: new Map(s.news.map((e) => [rowKey(e), e[3]])), best: new Map(s.best.map((e) => [rowKey(e), e[3]])) });
-const total = (st) => [...st.news.values(), ...st.best.values()].reduce((a, v) => a + v, 0);
-const put = (m, k, v, cap) => {
+const rowRating = (e) => {
+const r = ratingOfState(rowKey(e), { a: e[2], fc: e[4] });
+return r != null ? r : e[3];
+};
+const fromSnap = (s) => ({ news: new Map(s.news.map((e) => [rowKey(e), rowRating(e)])), best: new Map(s.best.map((e) => [rowKey(e), rowRating(e)])) });
+const sum = (st) => [...st.news.values(), ...st.best.values()].reduce((a, v) => a + v, 0);
+const hasRows = (s) => !!s && !!(s.best?.length || s.news?.length);
+const put = (m, k, v, cap, keep) => {
 const was = m.has(k);
 if (!was || v > m.get(k)) m.set(k, v);
 if (m.size > cap) {
 let low = null, lowV = Infinity;
-m.forEach((x, kk) => { if (x < lowV || (x === lowV && kk === k)) { low = kk; lowV = x; } });
+m.forEach((x, kk) => { if (keep && kk === k) return; if (x < lowV || (x === lowV && kk === k)) { low = kk; lowV = x; } });
 m.delete(low);
 }
 return { entered: !was && m.has(k), inFrame: m.has(k) };
 };
-let si = -1, st = null;
+const rated = (u) => u.changes.some((x) => x.type === "ach" || (x.type === "fc" && /^AP/.test(x.to)));
+const groups = new Map();
 updates.slice().sort(byTime).forEach((u) => {
-while (si + 1 < snaps.length && snaps[si + 1].t < u.t) { si++; st = snaps[si].best?.length || snaps[si].news?.length ? fromSnap(snaps[si]) : null; }
+let i = -1;
+while (i + 1 < snaps.length && snaps[i + 1].t < u.t) i++;
+if (i < 0 || !hasRows(snaps[i])) { out.set(u, { noSnap: true }); return; }
+if (!groups.has(i)) groups.set(i, []);
+groups.get(i).push(u);
+});
+groups.forEach((list, i) => {
+const prev = snaps[i], next = hasRows(snaps[i + 1]) ? snaps[i + 1] : null;
+const nextBest = next ? new Set(next.best.map(rowKey)) : null;
+const nextNew = next ? new Set(next.news.map(rowKey)) : null;
+const st = fromSnap(prev);
+const s0 = sum(st);
+const lastPush = new Map();
+list.forEach((u) => { if (rated(u)) lastPush.set(u.k, u); });
+const steps = []; // [{u, res, d}]  d = 50 首合计的变化
+list.forEach((u) => {
 const c = chartByK.get(u.k);
-if (!st) { out.set(u, { noSnap: true }); return; }
-if (!c || !c.const) { out.set(u, { noConst: true }); return; }
-if (!u.changes.some((x) => x.type === "ach" || (x.type === "fc" && /^AP/.test(x.to)))) { out.set(u, { noRating: true }); return; }
-const isNew = st.news.has(u.k) || (!st.best.has(u.k) && newVersions().includes(c.version_idx));
-const before = total(st);
-const res = { frame: isNew ? "NEW15" : "BEST35", ...put(isNew ? st.news : st.best, u.k, ratingOfState(u.k, u.after), isNew ? 15 : 35) };
-res.delta = total(st) - before;
-out.set(u, res);
+if (!c || !c.const) { steps.push({ u, res: { noConst: true }, d: 0 }); return; }
+if (!rated(u)) { steps.push({ u, res: { noRating: true }, d: 0 }); return; }
+const frame = nextBest && nextBest.has(u.k) ? "best" : nextNew && nextNew.has(u.k) ? "news"
+: st.best.has(u.k) ? "best" : st.news.has(u.k) ? "news" : newVersions().includes(c.version_idx) ? "news" : "best";
+const before = sum(st);
+const res = { frame: frame === "best" ? "BEST35" : "NEW15" };
+const inNext = next ? nextBest.has(u.k) || nextNew.has(u.k) : null;
+if (inNext === false && !st[frame].has(u.k)) Object.assign(res, { entered: false, inFrame: false });
+else Object.assign(res, put(st[frame], u.k, ratingOfState(u.k, u.after), frame === "best" ? 35 : 15, inNext === true && lastPush.get(u.k) === u));
+steps.push({ u, res, d: sum(st) - before });
+});
+const total = steps.reduce((a, x) => a + x.d, 0);
+const t0 = prev.r || s0; // 起点 = 前一个快照的游戏 Rating
+const gap = next && next.r && prev.r ? next.r - (t0 + total) : 0;
+let cur = t0;
+steps.forEach((x, k) => {
+x.res.ratingBefore = cur; // 这次推分前后的账号 Rating
+cur += x.d;
+if (x.res.frame) x.res.delta = x.d;
+if (gap && k === steps.length - 1) x.res.gap = gap;
+x.res.ratingAfter = cur + (k === steps.length - 1 ? gap : 0);
+out.set(x.u, x.res);
+});
 });
 return out;
 }
 const GOOD = "#7ee0a0";
-function impactText(im, u) {
-if (u && u.r != null) {
-const where = im && im.frame ? (im.entered ? "进入 " + im.frame : im.inFrame ? im.frame + " 内提升" : "") : "";
-const d = u.dr != null ? `（${signedInt(u.dr)}）` : "";
-return [[`DX Rating ${u.r}${d}`, where].filter(Boolean).join(" · "), u.dr > 0 ? GOOD : C.muted];
-}
-if (!im || im.noSnap) return ["之前没有快照，无法推算账号 Rating", C.line];
-if (im.noConst) return ["定数未知，无法推算账号 Rating", C.muted];
-if (im.noRating) return ["单曲 rating 不变", C.muted];
+function impactText(im) {
+if (!im || im.noSnap) return ["之前没有快照，算不出账号 Rating 的变化", C.line];
+const gap = im.gap ? ` · 另有 ${signedInt(im.gap)} 来自没记录到的变化` : "";
+if (im.noConst) return ["定数未知，算不出账号 Rating 的变化" + gap, C.muted];
+if (im.noRating) return ["只有标记 / DX 分提升 · 单曲 Rating 和账号 Rating 不变" + gap, C.muted];
 const head = im.entered ? "进入 " + im.frame : im.inFrame ? im.frame + " 内提升" : "未进入 " + im.frame;
-if (im.delta > 0) return [head + " · 账号 Rating +" + im.delta + "（推算）", GOOD];
-return [head + " · 账号 Rating 不变（推算）", C.muted];
+if (im.delta > 0) return [head + " · 账号 Rating +" + im.delta + gap, GOOD];
+return [head + " · 账号 Rating 不变" + gap, C.muted];
 }
 const fmtAch = (a) => (a / 10000).toFixed(4) + "%";
 const signedInt = (x) => (x > 0 ? "+" : x < 0 ? "−" : "±") + Math.abs(x);
@@ -1132,7 +1164,7 @@ seg("Rating " + (r0 != null ? r0 + " →" : "→"), C.muted);
 return right - x;
 }
 const inRange = (t, range) => (!range.from || t >= range.from) && (!range.to || t <= range.to);
-const changedAccount = (u, im) => (u.r != null && u.dr != null ? u.dr > 0 : !!im && im.delta > 0);
+const changedAccount = (u, im) => !!im && im.delta > 0;
 async function drawTrend(range, onlyRating) {
 const { updates: allUpdates } = derive(hist);
 const impact = accountImpact(hist, allUpdates);
@@ -1587,6 +1619,16 @@ history: { snaps: hist.snaps.length, obs: hist.obs.length, plays: hist.obs.filte
 playlogSample,
 playlogDetailSample,
 playMiss,
+impactCheck: (() => {
+const { updates } = derive(hist);
+const im = accountImpact(hist, updates);
+return hist.snaps.slice(1).map((s, i) => {
+const p0 = hist.snaps[i];
+const list = updates.filter((u) => u.t > p0.t && u.t <= s.t).map((u) => im.get(u) || {});
+const sumD = list.reduce((a, r) => a + (r.delta || 0), 0), gap = list.reduce((a, r) => a + (r.gap || 0), 0);
+return `${p0.t} → ${s.t}：快照差 ${s.r - p0.r}，推分合计 ${sumD}，差额 ${gap}`;
+});
+})(),
 matchLog,
 noJacket: b50.filter((s) => !s.img || jacketFails.has(s.img)).map((s) => `${s.frame} ${s.title} [${s.kind}] img=${s.img || "无"}${s.jacket ? " 页面曲绘=" + s.jacket : ""}`),
 diagnostics,
